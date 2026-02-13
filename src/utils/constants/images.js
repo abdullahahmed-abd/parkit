@@ -1,0 +1,168 @@
+// src/constants/images.js
+
+const BASE_URL = 'https://wallet.sundukpay.com/assets';
+const url = (path) => `${BASE_URL}/${path}`;
+
+export const IMAGES = {
+  addpotimages: {
+    aeroplaneimg: url('addpotimages/aeroplaneimg.png'),
+    bank: url('addpotimages/Bank.png'),
+    block: url('addpotimages/Block.png'),
+    block1: url('addpotimages/Block1.png'),
+    card: url('addpotimages/Card.png'),
+    carimg: url('addpotimages/carimg.png'),
+    delete: url('addpotimages/delete.png'),
+    eduactionimg: url('addpotimages/eduactionimg.png'),
+    emergencyimg: url('addpotimages/emergencyimg.png'),
+    failedRemovebgPreview: url('addpotimages/Failed-removebg-preview.png'),
+    graphbackground: url('addpotimages/Graphbackground.png'),
+    graphline: url('addpotimages/Graphline.png'),
+    hajjimg: url('addpotimages/hajjimg.png'),
+    homeimg: url('addpotimages/Homeimg.png'),
+    merchantlogo: url('addpotimages/merchantlogo.png'),
+    plus: url('addpotimages/plus.png'),
+    potimg: url('addpotimages/potimg.png'),
+    qr: url('addpotimages/QR.png'),
+    successfull: url('addpotimages/successfull.png'),
+    swap: url('addpotimages/Swap.png'),
+    unblock: url('addpotimages/Unblock.png'),
+    unblock1: url('addpotimages/Unblock1.png'),
+    user: url('addpotimages/user.png'),
+    wallet: url('addpotimages/Wallet.png'),
+  },
+
+  // root assets files
+  blockimg: url('blockimg.png'),
+  cancelinvest: url('cancelinvest.png'),
+  graphinitialimg: url('Graphinitialimg.png'),
+  investimg: url('investimg.png'),
+  investLogo: url('InvestLogo.png'),
+  logoutIcon: url('LogoutIcon.png'),
+  mpinlockimg: url('MPINLOCKimg.png'),
+  muteimg: url('muteimg.png'),
+  muteUpdate: url('muteUpdate.png'),
+  notyet: url('notyet.png'),
+  quote: url('quote.png'),
+  reminderimg: url('reminderimg.png'),
+  sunduqlogo: url('sunduqlogo.png'),
+  torch: url('Torch.png'),
+  unmute: url('unmute.png'),
+
+  chatImages: {
+    fuel: url('chatImages/fuel.png'),
+    grocery: url('chatImages/grocery.png'),
+    scholarship: url('chatImages/scholarship.png'),
+  },
+
+  currencyConverter: {
+    china: url('CurrencyConverter/China.png'),
+    gbp: url('CurrencyConverter/GBP.png'),
+    ind: url('CurrencyConverter/IND.png'),
+    japan: url('CurrencyConverter/Japan.png'),
+    kuwait: url('CurrencyConverter/Kuwait.png'),
+    oman: url('CurrencyConverter/oman.png'),
+    saudi: url('CurrencyConverter/Saudi.png'),
+    swap: url('CurrencyConverter/Swap.png'),
+    turkey: url('CurrencyConverter/turkey.png'),
+    uae: url('CurrencyConverter/UAE.png'),
+    usa: url('CurrencyConverter/USA.png'),
+  },
+
+  demoImages: {
+    medicalBill: url('demoImages/medicalBill.png'),
+    medicalBill2: url('demoImages/medicalBill2.png'),
+    medicalTemplate: url('demoImages/medicalTemplate.jpeg'),
+    patient: url('demoImages/patient.png'),
+  },
+
+  footerLogo: {
+    addpotimages: {
+      aeroplaneimg: url('FooterLogo/addpotimages/aeroplaneimg.png'),
+      carimg: url('FooterLogo/addpotimages/carimg.png'),
+      eduactionimg: url('FooterLogo/addpotimages/eduactionimg.png'),
+      emergencyimg: url('FooterLogo/addpotimages/emergencyimg.png'),
+      hajjimg: url('FooterLogo/addpotimages/hajjimg.png'),
+      homeimg: url('FooterLogo/addpotimages/Homeimg.png'),
+      potimg: url('FooterLogo/addpotimages/potimg.png'),
+    },
+    analytics: url('FooterLogo/Analytics.png'),
+    home: url('FooterLogo/Home.png'),
+    more: url('FooterLogo/More.png'),
+    payment: url('FooterLogo/Payment.png'),
+    pots: url('FooterLogo/Pots.png'),
+  },
+
+  globalchatscreen: {
+    abdullah: url('globalchatscreen/Abdullah.jpg'),
+    bilal: url('globalchatscreen/Bilal.jpg'),
+    islamSir: url('globalchatscreen/IslamSir.jpg'),
+    model1: url('globalchatscreen/Model1.jpg'),
+    model2: url('globalchatscreen/Model2.jpg'),
+    muneeb: url('globalchatscreen/Muneeb.jpg'),
+  },
+
+  globalCrouselImg: {
+    familyEducation1: url('GlobalCrouselImg/FamilyEducation1.png'),
+    familyEducation2: url('GlobalCrouselImg/FamilyEducation2.png'),
+    familyEducation3: url('GlobalCrouselImg/FamilyEducation3.png'),
+    familyEducation4: url('GlobalCrouselImg/FamilyEducation4.png'),
+    familyEducation5: url('GlobalCrouselImg/FamilyEducation5.png'),
+    household1: url('GlobalCrouselImg/Household1.png'),
+    household2: url('GlobalCrouselImg/Household2.png'),
+    household3: url('GlobalCrouselImg/Household3.png'),
+    household4: url('GlobalCrouselImg/Household4.png'),
+    household5: url('GlobalCrouselImg/Household5.png'),
+    household6: url('GlobalCrouselImg/Household6.png'),
+    muneeb2: url('GlobalCrouselImg/muneeb2.jpeg'),
+    relief1: url('GlobalCrouselImg/Relief1.png'),
+    sadaqah1: url('GlobalCrouselImg/Sadaqah1.png'),
+    sadaqah2: url('GlobalCrouselImg/Sadaqah2.png'),
+    sadaqah3: url('GlobalCrouselImg/Sadaqah3.png'),
+    sadaqah4: url('GlobalCrouselImg/Sadaqah4.png'),
+    sadaqah5: url('GlobalCrouselImg/Sadaqah5.png'),
+    savings1: url('GlobalCrouselImg/Savings1.png'),
+    travel1: url('GlobalCrouselImg/Travel1.png'),
+    travel2: url('GlobalCrouselImg/Travel2.png'),
+    travel3: url('GlobalCrouselImg/Travel3.png'),
+    travel4: url('GlobalCrouselImg/Travel4.png'),
+    travel5: url('GlobalCrouselImg/Travel5.png'),
+    travel6: url('GlobalCrouselImg/Travel6.png'),
+  },
+
+  globalScreenimages: {
+    badgeglobalimg: url('GlobalScreenimages/badgeglobalimg.png'),
+    bxbimg: url('GlobalScreenimages/BXBimg.png'),
+    educationimg: url('GlobalScreenimages/educationimg.png'),
+    foodhunger: url('GlobalScreenimages/Foodhunger.jpg'),
+    healthimg: url('GlobalScreenimages/healthimg.png'),
+    mosqueimg: url('GlobalScreenimages/mosqueimg.jpg'),
+    operationimg: url('GlobalScreenimages/operationimg.png'),
+    verifiedimg: url('GlobalScreenimages/verifiedimg.png'),
+  },
+
+  navigationBar: {
+    community: url('NavigationBar/Community.png'),
+    currency: url('NavigationBar/Currency.png'),
+    home: url('NavigationBar/Home.png'),
+    invest: url('NavigationBar/Invest.png'),
+    more: url('NavigationBar/More.png'),
+    payment: url('NavigationBar/Payment.png'),
+    pots: url('NavigationBar/Pots.png'),
+  },
+
+  paymentscreenimg: {
+    broadband: url('Paymentscreenimg/broadband.png'),
+    electricity: url('Paymentscreenimg/electricity.png'),
+    paytomobile: url('Paymentscreenimg/paytomobile.png'),
+    recharge: url('Paymentscreenimg/recharge.png'),
+    selftransfer: url('Paymentscreenimg/selftransfer.png'),
+  },
+
+  transactionDetailimages: {
+    payagain: url('TransactionDetailimages/payagain.png'),
+    receiptDownload: url('TransactionDetailimages/ReceiptDownload.png'),
+    shareReceipt: url('TransactionDetailimages/shareReceipt.png'),
+    viewHistory: url('TransactionDetailimages/viewHistory.png'),
+  },
+};
+
