@@ -11,19 +11,17 @@ buildscript {
     repositories {
         google()
         mavenCentral()
+        // Agar kabhi koi library JitPack se aati ho to:
+        // maven { url "https://www.jitpack.io" }
     }
 
     dependencies {
-        // Android Gradle Plugin
         classpath("com.android.tools.build:gradle:8.3.0")
-
-        // React Native Gradle Plugin
         classpath("com.facebook.react:react-native-gradle-plugin")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:${kotlinVersion}")
 
-        // Kotlin
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24")
-
-        // Google Services / Firebase
+        // ❌ Firebase removed, isliye ye mat add karna:
+        // classpath("com.google.gms:google-services:4.4.2")
     }
 }
 
@@ -31,6 +29,7 @@ allprojects {
     repositories {
         google()
         mavenCentral()
+        // maven { url "https://www.jitpack.io" } // if needed
     }
 }
 

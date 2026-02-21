@@ -1,11 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools"
-    package="com.islamicbank.newapp">
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- 🌍 Internet access -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- ✅ Activity Recognition -->
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+
+    <!-- ✅ Foreground service -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Android 14+ (safe for targetSdk high) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
+    <!-- ✅ Restart after reboot -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- 📇 Contacts -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
@@ -40,7 +50,7 @@
         android:usesPermissionFlags="neverForLocation"
         tools:targetApi="s" />
 
-    <!-- 📍 Location Permissions (for Bluetooth + Parking) -->
+    <!-- 📍 Location Permissions -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
@@ -59,6 +69,28 @@
         android:allowBackup="false"
         android:theme="@style/AppTheme"
         android:supportsRtl="true">
+
+        <!-- ✅ Foreground service for activity recognition updates -->
+        <service
+            android:name="com.islamicbank.newapp.ActivityRecognitionService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- ✅ Receiver that gets activity updates -->
+        <receiver
+            android:name="com.islamicbank.newapp.ActivityRecognitionReceiver"
+            android:exported="false" />
+
+        <!-- ✅ Boot receiver to restart service after reboot/app update -->
+        <receiver
+            android:name="com.islamicbank.newapp.BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
         <activity
             android:name="com.islamicbank.newapp.MainActivity"
@@ -91,6 +123,7 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
         </activity>
 
     </application>

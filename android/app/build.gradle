@@ -1,14 +1,12 @@
 apply plugin: "com.android.application"
 apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
-// ❌ Removed Firebase plugin
-// apply plugin: "com.google.gms.google-services"
 
 react {
     autolinkLibrariesWithApp()
 }
 
-def enableProguardInReleaseBuilds = true
+def enableProguardInReleaseBuilds = false   // ✅ PROGUARD DISABLED (No Crash)
 def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
 
 android {
@@ -18,7 +16,6 @@ android {
 
     namespace "com.islamicbank.newapp"
 
-    // ✅ FIX: ensure BuildConfig is generated (fixes unresolved BuildConfig in Kotlin)
     buildFeatures {
         buildConfig true
     }
@@ -29,13 +26,15 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
 
         versionCode 1
-        versionName "v3_dev_0.04"
+        versionName "3.0.4"
 
+        // ✅ 32-bit + 64-bit support
         ndk {
-            abiFilters "armeabi-v7a"
+            abiFilters "armeabi-v7a", "arm64-v8a"
         }
     }
 
+    // ✅ Single universal APK
     splits {
         abi {
             enable false
@@ -65,8 +64,8 @@ android {
 
         release {
             signingConfig signingConfigs.release
-            minifyEnabled enableProguardInReleaseBuilds
-            shrinkResources enableProguardInReleaseBuilds
+            minifyEnabled false
+            shrinkResources false
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
         }
     }
@@ -87,4 +86,5 @@ dependencies {
     }
 
     implementation("com.google.android.gms:play-services-location:21.0.1")
+    implementation("androidx.core:core-ktx:1.13.1")
 }

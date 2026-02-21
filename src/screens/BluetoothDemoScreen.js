@@ -16,16 +16,17 @@ import {
   PermissionsAndroid,
   Platform,
   NativeModules,
+  DeviceEventEmitter,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import BluetoothService from '../services/BluetoothService';
 
-const {BluetoothModule} = NativeModules;
+const {BluetoothModule, ActivityRecognitionModule} = NativeModules;
 
 /** ======================
  *  DEBUG LOGGER
  *  ====================== */
-const DEBUG = true;
+const DEBUG = true; // later: production me false kar dena
 const ts = () => new Date().toISOString();
 const log = (...args) => DEBUG && console.log(`[ParkIt][${ts()}]`, ...args);
 const warn = (...args) => DEBUG && console.warn(`[ParkIt][${ts()}]`, ...args);
@@ -65,10 +66,30 @@ const distanceMeters = (a, b) => {
   const dLon = toRad(lon2 - lon1);
 
   const s1 = Math.sin(dLat / 2) ** 2;
-  const s2 = Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  const s2 =
+    Math.cos(toRad(lat1)) *
+    Math.cos(toRad(lat2)) *
+    Math.sin(dLon / 2) ** 2;
 
   const c = 2 * Math.atan2(Math.sqrt(s1 + s2), Math.sqrt(1 - (s1 + s2)));
   return R * c;
+};
+
+const niceActivityLabel = s => {
+  switch (s) {
+    case 'still':
+      return 'STILL';
+    case 'walking':
+      return 'WALKING';
+    case 'running':
+      return 'RUNNING';
+    case 'in_vehicle':
+      return 'IN VEHICLE';
+    case 'on_bicycle':
+      return 'BICYCLE';
+    default:
+      return (s || 'UNKNOWN').toUpperCase();
+  }
 };
 
 const BluetoothDemoScreen = () => {
@@ -97,6 +118,16 @@ const BluetoothDemoScreen = () => {
   // History
   const [connectionHistory, setConnectionHistory] = useState([]);
 
+  // ✅ Activity Recognition states
+  const [arPermission, setArPermission] = useState(false);
+  const [arEnabled, setArEnabled] = useState(false);
+  const [arState, setArState] = useState('unknown');
+  const [arConfidence, setArConfidence] = useState(0);
+  const [arUpdatedAt, setArUpdatedAt] = useState(0);
+
+  const arSubRef = useRef(null);
+  const arPollRef = useRef(null);
+
   // animation
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
@@ -123,13 +154,28 @@ const BluetoothDemoScreen = () => {
   useEffect(() => {
     log('Screen mounted');
     log('BluetoothModule exists?', !!BluetoothModule);
-    log('BluetoothModule.getFreshLocation exists?', !!BluetoothModule?.getFreshLocation);
-    log('BluetoothModule.getCurrentLocation exists?', !!BluetoothModule?.getCurrentLocation);
+
+    log('ActivityRecognitionModule exists?', !!ActivityRecognitionModule);
+    log('AR methods:', {
+      start: !!ActivityRecognitionModule?.start,
+      stop: !!ActivityRecognitionModule?.stop,
+      getLast: !!ActivityRecognitionModule?.getLast,
+    });
 
     init();
 
     return () => {
       BluetoothService.stopListening();
+
+      if (arSubRef.current) {
+        arSubRef.current.remove();
+        arSubRef.current = null;
+      }
+
+      if (arPollRef.current) {
+        clearInterval(arPollRef.current);
+        arPollRef.current = null;
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -139,8 +185,16 @@ const BluetoothDemoScreen = () => {
     if (isConnected) {
       animation = Animated.loop(
         Animated.sequence([
-          Animated.timing(pulseAnim, {toValue: 1.3, duration: 1000, useNativeDriver: true}),
-          Animated.timing(pulseAnim, {toValue: 1, duration: 1000, useNativeDriver: true}),
+          Animated.timing(pulseAnim, {
+            toValue: 1.3,
+            duration: 1000,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 1,
+            duration: 1000,
+            useNativeDriver: true,
+          }),
         ]),
       );
       animation.start();
@@ -158,10 +212,150 @@ const BluetoothDemoScreen = () => {
       await requestLocationPermission();
       await loadSavedData();
       await startBluetoothListening();
+
+      // ✅ Activity Recognition init (permissions + listener + start)
+      await initActivityRecognition();
     } catch (e) {
       err('init error =>', e);
     } finally {
       setBootLoading(false);
+    }
+  };
+
+  // ---------------------------
+  // ACTIVITY RECOGNITION (AR)
+  // ---------------------------
+  const requestArPermission = async () => {
+    if (Platform.OS !== 'android') return false;
+
+    try {
+      log('Requesting ACTIVITY_RECOGNITION permission...');
+      const ar = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.ACTIVITY_RECOGNITION,
+        {
+          title: 'Activity Permission',
+          message:
+            'App needs activity recognition to detect still/walk/run/vehicle.',
+          buttonPositive: 'OK',
+        },
+      );
+      log('ACTIVITY_RECOGNITION result:', ar);
+
+      // Android 13+ notification permission for foreground service notification
+      if (Platform.Version >= 33) {
+        log('Requesting POST_NOTIFICATIONS permission (Android 13+)');
+        const notif = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
+        );
+        log('POST_NOTIFICATIONS result:', notif);
+      }
+
+      const ok = ar === PermissionsAndroid.RESULTS.GRANTED;
+      setArPermission(ok);
+      log('AR permission ok?', ok);
+      return ok;
+    } catch (e) {
+      err('requestArPermission error =>', e);
+      setArPermission(false);
+      return false;
+    }
+  };
+
+  const readLastAr = async () => {
+    try {
+      if (!ActivityRecognitionModule?.getLast) {
+        warn('getLast() not available');
+        return;
+      }
+      const last = await ActivityRecognitionModule.getLast();
+      log('getLast() =>', last);
+
+      setArState(last?.state || 'unknown');
+      setArConfidence(Number(last?.confidence || 0));
+      setArUpdatedAt(Number(last?.timestamp || 0));
+      setArEnabled(!!last?.enabled);
+    } catch (e) {
+      err('readLastAr error =>', e);
+    }
+  };
+
+  const startAr = async () => {
+    try {
+      if (!ActivityRecognitionModule?.start) {
+        Alert.alert('Missing', 'ActivityRecognitionModule.start not found.');
+        return;
+      }
+
+      log('startAr pressed. arPermission state=', arPermission);
+
+      if (!arPermission) {
+        const ok = await requestArPermission();
+        if (!ok) {
+          Alert.alert('Permission', 'Activity permission not granted.');
+          return;
+        }
+      }
+
+      log('Calling ActivityRecognitionModule.start(5000)...');
+      const res = await ActivityRecognitionModule.start(5000); // 5 sec
+      log('start() result =>', res);
+
+      setArEnabled(true);
+
+      // Read last from native storage after start
+      await readLastAr();
+    } catch (e) {
+      err('startAr error =>', e);
+      Alert.alert('AR Start Error', String(e?.message || e));
+    }
+  };
+
+  const stopAr = async () => {
+    try {
+      if (!ActivityRecognitionModule?.stop) return;
+      log('Calling ActivityRecognitionModule.stop()...');
+      const res = await ActivityRecognitionModule.stop();
+      log('stop() result =>', res);
+
+      setArEnabled(false);
+      await readLastAr();
+    } catch (e) {
+      err('stopAr error =>', e);
+    }
+  };
+
+  const initActivityRecognition = async () => {
+    // 1) subscribe for live events (when app is open)
+    if (!arSubRef.current) {
+      log('Subscribing to DeviceEventEmitter: ActivityRecognition');
+      arSubRef.current = DeviceEventEmitter.addListener(
+        'ActivityRecognition',
+        e => {
+          log('AR EVENT =>', e);
+          setArState(e?.state || 'unknown');
+          setArConfidence(Number(e?.confidence || 0));
+          setArUpdatedAt(Number(e?.timestamp || Date.now()));
+        },
+      );
+    }
+
+    // 2) read last stored value (works even if app was killed earlier)
+    await readLastAr();
+
+    // 3) ask permission + start service (only if user allows)
+    const ok = await requestArPermission();
+    if (ok) {
+      await startAr();
+    } else {
+      warn('AR permission not granted, not starting service');
+    }
+
+    // 4) DEBUG polling: every 10 seconds read native "last" (helps if events not coming)
+    if (!arPollRef.current) {
+      log('Starting AR polling every 10s (debug)');
+      arPollRef.current = setInterval(() => {
+        readLastAr();
+      }, 10000);
     }
   };
 
@@ -420,7 +614,6 @@ const BluetoothDemoScreen = () => {
       time: now.toLocaleTimeString(),
       date: now.toLocaleDateString(),
       location: loc,
-      // distance not applicable for connect
       distanceMeters: null,
     };
 
@@ -450,8 +643,8 @@ const BluetoothDemoScreen = () => {
     await saveParkedLoc(loc);
 
     // ✅ distance between connect-start and parked
-    const startLoc = drivingLocationRef.current; // last saved connect location
-    const dist = distanceMeters(startLoc, loc); // meters or null
+    const startLoc = drivingLocationRef.current;
+    const dist = distanceMeters(startLoc, loc);
 
     const entry = {
       type: 'disconnect',
@@ -480,10 +673,7 @@ const BluetoothDemoScreen = () => {
         `Lat/Lng: ${formatLatLng6(loc)}\nAccuracy: ${
           loc.accuracy ? Math.round(loc.accuracy) + 'm' : 'N/A'
         }\nSource: ${loc.source || 'N/A'}`,
-        [
-          {text: 'OK'},
-          {text: 'Open Maps', onPress: () => openMaps(loc)},
-        ],
+        [{text: 'OK'}, {text: 'Open Maps', onPress: () => openMaps(loc)}],
       );
     } catch (e) {
       Alert.alert('Error', 'Could not get location');
@@ -541,6 +731,12 @@ const BluetoothDemoScreen = () => {
       ? distanceMeters(drivingLocation, parkedLocation)
       : null;
 
+  const arBadgeText = ActivityRecognitionModule
+    ? arEnabled
+      ? `AR ${niceActivityLabel(arState)}`
+      : 'AR OFF'
+    : 'AR N/A';
+
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar
@@ -569,6 +765,10 @@ const BluetoothDemoScreen = () => {
             </Text>
           </View>
 
+          <View style={styles.badge}>
+            <Text style={styles.badgeText}>{arBadgeText}</Text>
+          </View>
+
           {isBtSyncing && (
             <View style={styles.badge}>
               <Text style={styles.badgeText}>Sync...</Text>
@@ -578,6 +778,46 @@ const BluetoothDemoScreen = () => {
       </View>
 
       <ScrollView style={styles.scroll}>
+        {/* Activity Recognition Card */}
+        <View style={styles.card}>
+          <View style={styles.row}>
+            <Text style={styles.cardTitle}>Activity Recognition</Text>
+
+            <View style={{flexDirection: 'row'}}>
+              <TouchableOpacity
+                style={[
+                  styles.btn,
+                  {marginRight: 8, backgroundColor: '#455A64'},
+                ]}
+                onPress={readLastAr}>
+                <Text style={styles.btnText}>Refresh</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.btn,
+                  {backgroundColor: arEnabled ? '#D32F2F' : '#1976D2'},
+                ]}
+                onPress={arEnabled ? stopAr : startAr}>
+                <Text style={styles.btnText}>{arEnabled ? 'Stop' : 'Start'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <Text style={styles.locStatus}>
+            Permission: {arPermission ? '✅ Granted' : '❌ Not granted'}
+          </Text>
+
+          <Text style={styles.locStatus}>
+            State: {niceActivityLabel(arState)} | Confidence:{' '}
+            {Math.round(arConfidence)}%
+          </Text>
+
+          <Text style={styles.hint}>
+            Updated: {arUpdatedAt ? new Date(arUpdatedAt).toLocaleString() : 'N/A'}
+          </Text>
+        </View>
+
         {/* Device Card */}
         <View style={styles.card}>
           <View style={styles.row}>
@@ -616,14 +856,14 @@ const BluetoothDemoScreen = () => {
             styles.statusCard,
             {backgroundColor: isConnected ? '#43A047' : '#FF5722'},
           ]}>
-          <Animated.View
-            style={[styles.dot, {transform: [{scale: pulseAnim}]}]}
-          />
+          <Animated.View style={[styles.dot, {transform: [{scale: pulseAnim}]}]} />
           <Text style={styles.statusTitle}>
             {isConnected ? 'DRIVING' : 'PARKED'}
           </Text>
           <Text style={styles.statusSub}>
-            {isConnected ? connectedDevice?.name : selectedDevice?.name || 'Select device'}
+            {isConnected
+              ? connectedDevice?.name
+              : selectedDevice?.name || 'Select device'}
           </Text>
 
           {connectionTime && <Text style={styles.statusTime}>{connectionTime}</Text>}
@@ -636,7 +876,9 @@ const BluetoothDemoScreen = () => {
 
           {!isConnected && parkedLocation && (
             <>
-              <TouchableOpacity style={styles.locBtn} onPress={() => openMaps(parkedLocation)}>
+              <TouchableOpacity
+                style={styles.locBtn}
+                onPress={() => openMaps(parkedLocation)}>
                 <Text style={styles.locBtnText}>View Parking</Text>
               </TouchableOpacity>
 
@@ -658,7 +900,9 @@ const BluetoothDemoScreen = () => {
 
             <Text style={styles.parkedSource}>
               Source: {parkedLocation.source || 'N/A'} | Accuracy:{' '}
-              {parkedLocation.accuracy ? Math.round(parkedLocation.accuracy) + 'm' : 'N/A'}
+              {parkedLocation.accuracy
+                ? Math.round(parkedLocation.accuracy) + 'm'
+                : 'N/A'}
             </Text>
 
             {Number.isFinite(lastDistance) && (
@@ -667,7 +911,9 @@ const BluetoothDemoScreen = () => {
               </Text>
             )}
 
-            <TouchableOpacity style={styles.mapsBtn} onPress={() => openMaps(parkedLocation)}>
+            <TouchableOpacity
+              style={styles.mapsBtn}
+              onPress={() => openMaps(parkedLocation)}>
               <Text style={styles.mapsBtnText}>Open Google Maps</Text>
             </TouchableOpacity>
           </View>
@@ -717,11 +963,12 @@ const BluetoothDemoScreen = () => {
                     </TouchableOpacity>
                   )}
 
-                  {item.type === 'disconnect' && Number.isFinite(item.distanceMeters) && (
-                    <Text style={styles.historyDistance}>
-                      Distance: {Math.round(item.distanceMeters)} m
-                    </Text>
-                  )}
+                  {item.type === 'disconnect' &&
+                    Number.isFinite(item.distanceMeters) && (
+                      <Text style={styles.historyDistance}>
+                        Distance: {Math.round(item.distanceMeters)} m
+                      </Text>
+                    )}
                 </View>
               </View>
             ))
@@ -787,84 +1034,207 @@ const BluetoothDemoScreen = () => {
 
 const styles = StyleSheet.create({
   container: {flex: 1, backgroundColor: '#F5F5F5'},
-  loading: {flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#1A237E'},
+  loading: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#1A237E',
+  },
   loadingText: {color: '#FFF', fontSize: 18, marginTop: 10},
 
   header: {padding: 20, alignItems: 'center'},
   title: {fontSize: 26, fontWeight: 'bold', color: '#FFF'},
   subtitle: {fontSize: 12, color: '#FFF', opacity: 0.9, marginTop: 2},
 
-  badges: {flexDirection: 'row', marginTop: 10},
+  badges: {
+    flexDirection: 'row',
+    marginTop: 10,
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+  },
   badge: {
     backgroundColor: 'rgba(255,255,255,0.2)',
     paddingHorizontal: 12,
     paddingVertical: 5,
     borderRadius: 12,
     marginHorizontal: 4,
+    marginVertical: 4,
   },
   badgeText: {color: '#FFF', fontSize: 12, fontWeight: '600'},
 
   scroll: {flex: 1, padding: 12},
 
-  card: {backgroundColor: '#FFF', borderRadius: 12, padding: 15, marginBottom: 12, elevation: 2},
-  row: {flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10},
+  card: {
+    backgroundColor: '#FFF',
+    borderRadius: 12,
+    padding: 15,
+    marginBottom: 12,
+    elevation: 2,
+  },
+  row: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
   cardTitle: {fontSize: 16, fontWeight: 'bold', color: '#333'},
 
-  btn: {backgroundColor: '#1976D2', paddingHorizontal: 14, paddingVertical: 6, borderRadius: 12},
+  btn: {
+    backgroundColor: '#1976D2',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 12,
+  },
   btnText: {color: '#FFF', fontWeight: '600', fontSize: 13},
 
-  deviceBox: {flexDirection: 'row', alignItems: 'center', backgroundColor: '#E3F2FD', padding: 12, borderRadius: 10},
+  deviceBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#E3F2FD',
+    padding: 12,
+    borderRadius: 10,
+  },
   deviceIcon: {fontSize: 26, marginRight: 12},
   deviceName: {fontSize: 15, fontWeight: 'bold', color: '#1565C0'},
   deviceAddr: {fontSize: 11, color: '#64B5F6'},
   x: {fontSize: 20, color: '#F44336', paddingHorizontal: 8},
-  muted: {color: '#888', fontStyle: 'italic', textAlign: 'center', padding: 10},
+  muted: {
+    color: '#888',
+    fontStyle: 'italic',
+    textAlign: 'center',
+    padding: 10,
+  },
 
-  statusCard: {borderRadius: 18, padding: 28, alignItems: 'center', marginBottom: 12, elevation: 4},
-  dot: {width: 22, height: 22, borderRadius: 11, backgroundColor: 'rgba(255,255,255,0.4)', marginBottom: 12},
+  statusCard: {
+    borderRadius: 18,
+    padding: 28,
+    alignItems: 'center',
+    marginBottom: 12,
+    elevation: 4,
+  },
+  dot: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: 'rgba(255,255,255,0.4)',
+    marginBottom: 12,
+  },
   statusTitle: {fontSize: 24, fontWeight: 'bold', color: '#FFF'},
   statusSub: {fontSize: 14, color: '#FFF', opacity: 0.9, marginTop: 4},
   statusTime: {fontSize: 13, color: '#FFF', opacity: 0.8, marginTop: 6},
   smallWhite: {fontSize: 12, color: '#FFF', opacity: 0.95, marginTop: 8},
 
-  locBtn: {marginTop: 14, backgroundColor: 'rgba(255,255,255,0.25)', paddingHorizontal: 18, paddingVertical: 10, borderRadius: 18},
+  locBtn: {
+    marginTop: 14,
+    backgroundColor: 'rgba(255,255,255,0.25)',
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 18,
+  },
   locBtnText: {color: '#FFF', fontWeight: 'bold', fontSize: 14},
 
-  parkedCard: {backgroundColor: '#FFF', borderRadius: 12, padding: 16, marginBottom: 12, borderLeftWidth: 4, borderLeftColor: '#FF5722', elevation: 2},
-  parkedTitle: {fontSize: 15, fontWeight: 'bold', color: '#E65100', marginBottom: 6},
+  parkedCard: {
+    backgroundColor: '#FFF',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+    borderLeftWidth: 4,
+    borderLeftColor: '#FF5722',
+    elevation: 2,
+  },
+  parkedTitle: {
+    fontSize: 15,
+    fontWeight: 'bold',
+    color: '#E65100',
+    marginBottom: 6,
+  },
   parkedBig: {fontSize: 20, fontWeight: '700', color: '#333', marginTop: 4},
   parkedSource: {fontSize: 11, color: '#888', marginTop: 8},
-  mapsBtn: {backgroundColor: '#4285F4', marginTop: 12, padding: 12, borderRadius: 10, alignItems: 'center'},
+  mapsBtn: {
+    backgroundColor: '#4285F4',
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
   mapsBtnText: {color: '#FFF', fontWeight: 'bold', fontSize: 14},
 
   locStatus: {fontSize: 12, color: '#666', marginBottom: 10},
-  testBtn: {backgroundColor: '#9C27B0', padding: 12, borderRadius: 10, alignItems: 'center'},
+  testBtn: {
+    backgroundColor: '#9C27B0',
+    padding: 12,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
   testBtnText: {color: '#FFF', fontWeight: 'bold', fontSize: 14},
   hint: {fontSize: 11, color: '#888', textAlign: 'center', marginTop: 8},
 
   clearBtn: {fontSize: 12, color: '#F44336'},
 
-  historyItem: {flexDirection: 'row', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#EEE', alignItems: 'flex-start'},
+  historyItem: {
+    flexDirection: 'row',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#EEE',
+    alignItems: 'flex-start',
+  },
   historyIcon: {fontSize: 18, marginRight: 10, marginTop: 2},
   historyDevice: {fontSize: 14, fontWeight: '600', color: '#333'},
   historyTime: {fontSize: 11, color: '#666', marginTop: 2},
   historyLoc: {fontSize: 11, color: '#1976D2', marginTop: 2},
-  historyDistance: {fontSize: 11, color: '#444', marginTop: 4, fontWeight: '600'},
+  historyDistance: {
+    fontSize: 11,
+    color: '#444',
+    marginTop: 4,
+    fontWeight: '600',
+  },
 
-  refreshBtn: {backgroundColor: '#1976D2', padding: 14, borderRadius: 12, alignItems: 'center'},
+  refreshBtn: {
+    backgroundColor: '#1976D2',
+    padding: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
   refreshText: {color: '#FFF', fontSize: 15, fontWeight: 'bold'},
 
-  modalBg: {flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end'},
-  modalBox: {backgroundColor: '#FFF', borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 18, maxHeight: '60%'},
+  modalBg: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  modalBox: {
+    backgroundColor: '#FFF',
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    padding: 18,
+    maxHeight: '60%',
+  },
   modalTitle: {fontSize: 18, fontWeight: 'bold'},
   modalX: {fontSize: 26, color: '#888'},
-  modalDevice: {flexDirection: 'row', alignItems: 'center', padding: 14, backgroundColor: '#F5F5F5', borderRadius: 12, marginBottom: 10},
-  modalDeviceSelected: {backgroundColor: '#E3F2FD', borderWidth: 2, borderColor: '#1976D2'},
+  modalDevice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 14,
+    backgroundColor: '#F5F5F5',
+    borderRadius: 12,
+    marginBottom: 10,
+  },
+  modalDeviceSelected: {
+    backgroundColor: '#E3F2FD',
+    borderWidth: 2,
+    borderColor: '#1976D2',
+  },
   modalDeviceIcon: {fontSize: 24, marginRight: 12},
   modalDeviceName: {fontSize: 15, fontWeight: '600'},
   modalDeviceAddr: {fontSize: 11, color: '#888'},
   check: {fontSize: 20, color: '#4CAF50', fontWeight: 'bold'},
-  modalRefresh: {backgroundColor: '#E3F2FD', padding: 14, borderRadius: 12, alignItems: 'center', marginTop: 10},
+  modalRefresh: {
+    backgroundColor: '#E3F2FD',
+    padding: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginTop: 10,
+  },
   modalRefreshText: {color: '#1976D2', fontWeight: 'bold'},
 });
 
