@@ -26,7 +26,7 @@ const {BluetoothModule, ActivityRecognitionModule} = NativeModules;
 /** ======================
  *  DEBUG LOGGER
  *  ====================== */
-const DEBUG = true; // later: production me false kar dena
+const DEBUG = true;
 const ts = () => new Date().toISOString();
 const log = (...args) => DEBUG && console.log(`[ParkIt][${ts()}]`, ...args);
 const warn = (...args) => DEBUG && console.warn(`[ParkIt][${ts()}]`, ...args);
@@ -59,18 +59,15 @@ const distanceMeters = (a, b) => {
 
   if (!isValidLatLng(lat1, lon1) || !isValidLatLng(lat2, lon2)) return null;
 
-  const R = 6371000; // meters
+  const R = 6371000;
   const toRad = x => (x * Math.PI) / 180;
-
   const dLat = toRad(lat2 - lat1);
   const dLon = toRad(lon2 - lon1);
-
   const s1 = Math.sin(dLat / 2) ** 2;
   const s2 =
     Math.cos(toRad(lat1)) *
     Math.cos(toRad(lat2)) *
     Math.sin(dLon / 2) ** 2;
-
   const c = 2 * Math.atan2(Math.sqrt(s1 + s2), Math.sqrt(1 - (s1 + s2)));
   return R * c;
 };
@@ -89,6 +86,24 @@ const niceActivityLabel = s => {
       return 'BICYCLE';
     default:
       return (s || 'UNKNOWN').toUpperCase();
+  }
+};
+
+// Activity icon helper
+const activityIcon = s => {
+  switch (s) {
+    case 'still':
+      return '🧍';
+    case 'walking':
+      return '🚶';
+    case 'running':
+      return '🏃';
+    case 'in_vehicle':
+      return '🚗';
+    case 'on_bicycle':
+      return '🚲';
+    default:
+      return '❓';
   }
 };
 
@@ -111,32 +126,30 @@ const BluetoothDemoScreen = () => {
   // Location states
   const [isGettingLocation, setIsGettingLocation] = useState(false);
   const [locationStatus, setLocationStatus] = useState('Ready');
-
-  const [drivingLocation, setDrivingLocation] = useState(null); // connect time location
-  const [parkedLocation, setParkedLocation] = useState(null); // disconnect time location
+  const [drivingLocation, setDrivingLocation] = useState(null);
+  const [parkedLocation, setParkedLocation] = useState(null);
 
   // History
   const [connectionHistory, setConnectionHistory] = useState([]);
 
-  // ✅ Activity Recognition states
+  // Activity Recognition states
   const [arPermission, setArPermission] = useState(false);
   const [arEnabled, setArEnabled] = useState(false);
   const [arState, setArState] = useState('unknown');
   const [arConfidence, setArConfidence] = useState(0);
   const [arUpdatedAt, setArUpdatedAt] = useState(0);
+  const [arTopActivities, setArTopActivities] = useState([]);
 
   const arSubRef = useRef(null);
   const arPollRef = useRef(null);
 
-  // animation
+  // Animation
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
   // Refs to avoid stale state issues
   const selectedDeviceRef = useRef(null);
   const connectedDeviceRef = useRef(null);
   const drivingLocationRef = useRef(null);
-
-  // For disconnect "Unknown Device" case
   const lastConnectedRef = useRef({address: null, name: null});
 
   useEffect(() => {
@@ -151,16 +164,23 @@ const BluetoothDemoScreen = () => {
     drivingLocationRef.current = drivingLocation;
   }, [drivingLocation]);
 
+  // ─── Mount ────────────────────────────────────────────────
   useEffect(() => {
     log('Screen mounted');
     log('BluetoothModule exists?', !!BluetoothModule);
-
     log('ActivityRecognitionModule exists?', !!ActivityRecognitionModule);
-    log('AR methods:', {
-      start: !!ActivityRecognitionModule?.start,
-      stop: !!ActivityRecognitionModule?.stop,
-      getLast: !!ActivityRecognitionModule?.getLast,
-    });
+
+    if (ActivityRecognitionModule) {
+      log('AR Module methods:', {
+        start: !!ActivityRecognitionModule?.start,
+        stop: !!ActivityRecognitionModule?.stop,
+        getLast: !!ActivityRecognitionModule?.getLast,
+        simulateActivity: !!ActivityRecognitionModule?.simulateActivity,
+      });
+    } else {
+      err('❌ ActivityRecognitionModule is NULL!');
+      err('Fix: MainApplication me ActivityRecognitionPackage() add karo');
+    }
 
     init();
 
@@ -180,6 +200,7 @@ const BluetoothDemoScreen = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ─── Pulse animation ──────────────────────────────────────
   useEffect(() => {
     let animation;
     if (isConnected) {
@@ -204,16 +225,12 @@ const BluetoothDemoScreen = () => {
     return () => animation && animation.stop();
   }, [isConnected, pulseAnim]);
 
-  // ---------------------------
-  // INIT
-  // ---------------------------
+  // ─── INIT ─────────────────────────────────────────────────
   const init = async () => {
     try {
       await requestLocationPermission();
       await loadSavedData();
       await startBluetoothListening();
-
-      // ✅ Activity Recognition init (permissions + listener + start)
       await initActivityRecognition();
     } catch (e) {
       err('init error =>', e);
@@ -222,28 +239,33 @@ const BluetoothDemoScreen = () => {
     }
   };
 
-  // ---------------------------
-  // ACTIVITY RECOGNITION (AR)
-  // ---------------------------
+  // ─── ACTIVITY RECOGNITION ─────────────────────────────────
+
   const requestArPermission = async () => {
-    if (Platform.OS !== 'android') return false;
+    if (Platform.OS !== 'android') {
+      setArPermission(true);
+      return true;
+    }
 
     try {
       log('Requesting ACTIVITY_RECOGNITION permission...');
+
       const ar = await PermissionsAndroid.request(
         PermissionsAndroid.PERMISSIONS.ACTIVITY_RECOGNITION,
         {
           title: 'Activity Permission',
           message:
-            'App needs activity recognition to detect still/walk/run/vehicle.',
-          buttonPositive: 'OK',
+            'App needs activity recognition to detect still / walk / run / vehicle.',
+          buttonPositive: 'Allow',
+          buttonNegative: 'Deny',
         },
       );
+
       log('ACTIVITY_RECOGNITION result:', ar);
 
-      // Android 13+ notification permission for foreground service notification
+      // Android 13+ notification permission
       if (Platform.Version >= 33) {
-        log('Requesting POST_NOTIFICATIONS permission (Android 13+)');
+        log('Requesting POST_NOTIFICATIONS (Android 13+)');
         const notif = await PermissionsAndroid.request(
           PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
         );
@@ -252,7 +274,7 @@ const BluetoothDemoScreen = () => {
 
       const ok = ar === PermissionsAndroid.RESULTS.GRANTED;
       setArPermission(ok);
-      log('AR permission ok?', ok);
+      log('AR permission granted?', ok);
       return ok;
     } catch (e) {
       err('requestArPermission error =>', e);
@@ -264,16 +286,19 @@ const BluetoothDemoScreen = () => {
   const readLastAr = async () => {
     try {
       if (!ActivityRecognitionModule?.getLast) {
-        warn('getLast() not available');
+        warn('getLast() not available on module');
         return;
       }
-      const last = await ActivityRecognitionModule.getLast();
-      log('getLast() =>', last);
 
-      setArState(last?.state || 'unknown');
-      setArConfidence(Number(last?.confidence || 0));
-      setArUpdatedAt(Number(last?.timestamp || 0));
-      setArEnabled(!!last?.enabled);
+      const last = await ActivityRecognitionModule.getLast();
+      log('📖 getLast() =>', JSON.stringify(last));
+
+      if (last) {
+        setArState(last.state || 'unknown');
+        setArConfidence(Number(last.confidence ?? 0));
+        setArUpdatedAt(Number(last.timestamp ?? 0));
+        setArEnabled(Boolean(last.enabled));
+      }
     } catch (e) {
       err('readLastAr error =>', e);
     }
@@ -286,24 +311,24 @@ const BluetoothDemoScreen = () => {
         return;
       }
 
-      log('startAr pressed. arPermission state=', arPermission);
-
-      if (!arPermission) {
-        const ok = await requestArPermission();
-        if (!ok) {
-          Alert.alert('Permission', 'Activity permission not granted.');
+      // Check / request permission
+      let permOk = arPermission;
+      if (!permOk) {
+        permOk = await requestArPermission();
+        if (!permOk) {
+          Alert.alert('Permission Denied', 'Activity recognition permission not granted.');
           return;
         }
       }
 
       log('Calling ActivityRecognitionModule.start(5000)...');
-      const res = await ActivityRecognitionModule.start(5000); // 5 sec
+      const res = await ActivityRecognitionModule.start(5000);
       log('start() result =>', res);
 
       setArEnabled(true);
 
-      // Read last from native storage after start
-      await readLastAr();
+      // Read after 3s so first data is available
+      setTimeout(() => readLastAr(), 3000);
     } catch (e) {
       err('startAr error =>', e);
       Alert.alert('AR Start Error', String(e?.message || e));
@@ -313,6 +338,7 @@ const BluetoothDemoScreen = () => {
   const stopAr = async () => {
     try {
       if (!ActivityRecognitionModule?.stop) return;
+
       log('Calling ActivityRecognitionModule.stop()...');
       const res = await ActivityRecognitionModule.stop();
       log('stop() result =>', res);
@@ -324,44 +350,102 @@ const BluetoothDemoScreen = () => {
     }
   };
 
+  // ✅ Test Simulate Activity - Different activities ke liye
+  const testSimulate = async (activity = 'walking', conf = 85) => {
+    try {
+      if (!ActivityRecognitionModule?.simulateActivity) {
+        Alert.alert('Error', 'simulateActivity method not found!\n\nKotlin file me method add karo.');
+        return;
+      }
+
+      log(`Simulating: ${activity} ${conf}%`);
+      await ActivityRecognitionModule.simulateActivity(activity, conf);
+      await readLastAr();
+      Alert.alert('✅ Simulated', `Activity: ${activity.toUpperCase()} ${conf}%`);
+    } catch (e) {
+      console.error('testSimulate error:', e);
+      Alert.alert('Error', String(e?.message || e));
+    }
+  };
+
+  // Test debug info
+  const testDebug = async () => {
+    if (!ActivityRecognitionModule?.getDebugInfo) {
+      Alert.alert('Error', 'getDebugInfo not available');
+      return;
+    }
+
+    try {
+      const info = await ActivityRecognitionModule.getDebugInfo();
+      console.log('AR Debug Info:', JSON.stringify(info, null, 2));
+      Alert.alert('AR Debug', JSON.stringify(info, null, 2));
+    } catch (e) {
+      Alert.alert('Error', String(e));
+    }
+  };
+
   const initActivityRecognition = async () => {
-    // 1) subscribe for live events (when app is open)
+    // STEP 1 – Module null guard
+    if (!ActivityRecognitionModule) {
+      err('❌ ActivityRecognitionModule is NULL – skipping AR init');
+      return;
+    }
+
+    // STEP 2 – Subscribe live events
     if (!arSubRef.current) {
-      log('Subscribing to DeviceEventEmitter: ActivityRecognition');
+      log('📡 Subscribing DeviceEventEmitter: ActivityRecognition');
       arSubRef.current = DeviceEventEmitter.addListener(
         'ActivityRecognition',
-        e => {
-          log('AR EVENT =>', e);
-          setArState(e?.state || 'unknown');
-          setArConfidence(Number(e?.confidence || 0));
-          setArUpdatedAt(Number(e?.timestamp || Date.now()));
+        event => {
+          log('🎯 AR EVENT =>', JSON.stringify(event));
+
+          if (event?.state) {
+            setArState(event.state);
+            setArConfidence(Number(event.confidence ?? 0));
+            setArUpdatedAt(Number(event.timestamp ?? Date.now()));
+
+            // Save top activities for debug display
+            if (Array.isArray(event.top)) {
+              setArTopActivities(event.top);
+            }
+          }
         },
       );
     }
 
-    // 2) read last stored value (works even if app was killed earlier)
+    // STEP 3 – Read last saved value from SharedPrefs
     await readLastAr();
 
-    // 3) ask permission + start service (only if user allows)
-    const ok = await requestArPermission();
-    if (ok) {
-      await startAr();
-    } else {
-      warn('AR permission not granted, not starting service');
+    // STEP 4 – Request permission & start
+    const permOk = await requestArPermission();
+    if (!permOk) {
+      warn('AR permission not granted, skipping start');
+      return;
     }
 
-    // 4) DEBUG polling: every 10 seconds read native "last" (helps if events not coming)
+    // STEP 5 – Start service
+    try {
+      log('Starting AR service (5000ms)...');
+      const res = await ActivityRecognitionModule.start(5000);
+      log('AR start result =>', res);
+      setArEnabled(true);
+
+      // Read again after 3 sec
+      setTimeout(() => readLastAr(), 3000);
+    } catch (e) {
+      err('AR auto-start failed =>', e);
+    }
+
+    // STEP 6 – Polling every 10s (debug / fallback)
     if (!arPollRef.current) {
-      log('Starting AR polling every 10s (debug)');
+      log('Starting AR polling every 10s');
       arPollRef.current = setInterval(() => {
         readLastAr();
       }, 10000);
     }
   };
 
-  // ---------------------------
-  // PERMISSIONS
-  // ---------------------------
+  // ─── PERMISSIONS ──────────────────────────────────────────
   const requestLocationPermission = async () => {
     if (Platform.OS !== 'android') return true;
 
@@ -370,8 +454,8 @@ const BluetoothDemoScreen = () => {
         PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
         {
           title: 'Location Permission',
-          message: 'ParkIt needs location to save parking spot',
-          buttonPositive: 'OK',
+          message: 'ParkIt needs location to save your parking spot',
+          buttonPositive: 'Allow',
         },
       );
 
@@ -384,15 +468,15 @@ const BluetoothDemoScreen = () => {
     }
   };
 
-  // ---------------------------
-  // STORAGE
-  // ---------------------------
+  // ─── STORAGE ──────────────────────────────────────────────
   const loadSavedData = async () => {
     try {
-      const d = await AsyncStorage.getItem('selectedDevice');
-      const h = await AsyncStorage.getItem('history');
-      const parked = await AsyncStorage.getItem('parkedLoc');
-      const driving = await AsyncStorage.getItem('drivingLoc');
+      const [d, h, parked, driving] = await Promise.all([
+        AsyncStorage.getItem('selectedDevice'),
+        AsyncStorage.getItem('history'),
+        AsyncStorage.getItem('parkedLoc'),
+        AsyncStorage.getItem('drivingLoc'),
+      ]);
 
       if (d) setSelectedDevice(JSON.parse(d));
       if (h) setConnectionHistory(JSON.parse(h));
@@ -421,9 +505,7 @@ const BluetoothDemoScreen = () => {
     } catch (e) {}
   };
 
-  // ---------------------------
-  // LOCATION (Native Fresh -> Native Current -> IP fallback)
-  // ---------------------------
+  // ─── LOCATION ─────────────────────────────────────────────
   const getIPLocation = async () => {
     try {
       const response = await fetch('http://ip-api.com/json/');
@@ -450,22 +532,24 @@ const BluetoothDemoScreen = () => {
     try {
       if (!BluetoothModule) return null;
 
-      // ✅ 1) Fresh/live
       if (fresh && BluetoothModule?.getFreshLocation) {
         log('Calling getFreshLocation()...');
         const f = await BluetoothModule.getFreshLocation();
         const lat = toNum(f?.latitude);
         const lng = toNum(f?.longitude);
-        if (isValidLatLng(lat, lng)) return {...f, latitude: lat, longitude: lng};
+        if (isValidLatLng(lat, lng)) {
+          return {...f, latitude: lat, longitude: lng};
+        }
       }
 
-      // ✅ 2) Current/last-known
       if (BluetoothModule?.getCurrentLocation) {
         log('Calling getCurrentLocation()...');
         const c = await BluetoothModule.getCurrentLocation();
         const lat = toNum(c?.latitude);
         const lng = toNum(c?.longitude);
-        if (isValidLatLng(lat, lng)) return {...c, latitude: lat, longitude: lng};
+        if (isValidLatLng(lat, lng)) {
+          return {...c, latitude: lat, longitude: lng};
+        }
       }
 
       return null;
@@ -520,44 +604,29 @@ const BluetoothDemoScreen = () => {
     const lat = toNum(loc?.latitude);
     const lng = toNum(loc?.longitude);
     if (!isValidLatLng(lat, lng)) return;
-
     const url = `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
     Linking.openURL(url).catch(() => {});
   };
 
-  // ---------------------------
-  // EVENT FILTER (selected device)
-  // ---------------------------
+  // ─── BLUETOOTH ────────────────────────────────────────────
   const shouldHandleEventForSelected = device => {
     const selected = selectedDeviceRef.current;
     if (!selected) return true;
-
     if (device?.address) return device.address === selected.address;
-
-    // if event missing address (rare), match last connected
     return lastConnectedRef.current?.address === selected.address;
   };
 
   const getNiceDeviceName = device => {
-    const selected = selectedDeviceRef.current;
-    const last = lastConnectedRef.current;
-
-    // some devices send weird key "namme"
     const nameFromEvent = device?.name || device?.namme;
-
     if (nameFromEvent && nameFromEvent !== 'Unknown Device') return nameFromEvent;
-
     return (
       connectedDeviceRef.current?.name ||
-      last?.name ||
-      selected?.name ||
+      lastConnectedRef.current?.name ||
+      selectedDeviceRef.current?.name ||
       'Unknown Device'
     );
   };
 
-  // ---------------------------
-  // BLUETOOTH
-  // ---------------------------
   const startBluetoothListening = async () => {
     setIsBtSyncing(true);
     try {
@@ -570,7 +639,6 @@ const BluetoothDemoScreen = () => {
       setPairedDevices(devices);
 
       await BluetoothService.stopListening();
-
       await BluetoothService.startListening({
         onConnect: onDeviceConnect,
         onDisconnect: onDeviceDisconnect,
@@ -587,23 +655,20 @@ const BluetoothDemoScreen = () => {
     log('onDeviceConnect =>', device);
 
     if (!shouldHandleEventForSelected(device)) {
-      log('Connect ignored (not selected)');
+      log('Connect ignored (not selected device)');
       return;
     }
 
-    // remember last connected (for disconnect unknown)
     lastConnectedRef.current = {
       address: device?.address || null,
       name: device?.name || null,
     };
 
     const now = new Date();
-
-    // ✅ fresh live location
     const loc = await getLocation({fresh: true});
+
     setDrivingLocation(loc);
     saveDrivingLoc(loc);
-
     setIsConnected(true);
     setConnectedDevice(device);
     setConnectionTime(now.toLocaleTimeString());
@@ -615,6 +680,7 @@ const BluetoothDemoScreen = () => {
       date: now.toLocaleDateString(),
       location: loc,
       distanceMeters: null,
+      activity: arState,
     };
 
     setConnectionHistory(prev => {
@@ -628,13 +694,11 @@ const BluetoothDemoScreen = () => {
     log('onDeviceDisconnect =>', device);
 
     if (!shouldHandleEventForSelected(device)) {
-      log('Disconnect ignored (not selected)');
+      log('Disconnect ignored (not selected device)');
       return;
     }
 
     const now = new Date();
-
-    // ✅ fresh live location
     const loc = await getLocation({fresh: true});
 
     setIsConnected(false);
@@ -642,7 +706,6 @@ const BluetoothDemoScreen = () => {
     setParkedLocation(loc);
     await saveParkedLoc(loc);
 
-    // ✅ distance between connect-start and parked
     const startLoc = drivingLocationRef.current;
     const dist = distanceMeters(startLoc, loc);
 
@@ -653,6 +716,7 @@ const BluetoothDemoScreen = () => {
       date: now.toLocaleDateString(),
       location: loc,
       distanceMeters: dist,
+      activity: arState,
     };
 
     setConnectionHistory(prev => {
@@ -662,18 +726,19 @@ const BluetoothDemoScreen = () => {
     });
   };
 
-  // ---------------------------
-  // UI actions
-  // ---------------------------
+  // ─── UI ACTIONS ───────────────────────────────────────────
   const testLocation = async () => {
     try {
       const loc = await getLocation({fresh: true});
       Alert.alert(
-        'LIVE GPS Location',
+        '📍 LIVE GPS Location',
         `Lat/Lng: ${formatLatLng6(loc)}\nAccuracy: ${
           loc.accuracy ? Math.round(loc.accuracy) + 'm' : 'N/A'
         }\nSource: ${loc.source || 'N/A'}`,
-        [{text: 'OK'}, {text: 'Open Maps', onPress: () => openMaps(loc)}],
+        [
+          {text: 'OK'},
+          {text: 'Open Maps', onPress: () => openMaps(loc)},
+        ],
       );
     } catch (e) {
       Alert.alert('Error', 'Could not get location');
@@ -686,22 +751,31 @@ const BluetoothDemoScreen = () => {
     try {
       await AsyncStorage.setItem('selectedDevice', JSON.stringify(device));
     } catch (e) {}
-    Alert.alert('Selected', device?.name || 'Device');
+    Alert.alert('✅ Selected', device?.name || 'Device');
   };
 
   const clearDevice = async () => {
-    setSelectedDevice(null);
-    setIsConnected(false);
-    try {
-      await AsyncStorage.removeItem('selectedDevice');
-    } catch (e) {}
-  };
-
-  const clearHistory = () => {
-    Alert.alert('Clear All?', 'Delete history?', [
+    Alert.alert('Remove Device?', 'Selected device ko remove karein?', [
       {text: 'No'},
       {
         text: 'Yes',
+        onPress: async () => {
+          setSelectedDevice(null);
+          setIsConnected(false);
+          try {
+            await AsyncStorage.removeItem('selectedDevice');
+          } catch (e) {}
+        },
+      },
+    ]);
+  };
+
+  const clearHistory = () => {
+    Alert.alert('Clear All?', 'Puri history delete ho jayegi.', [
+      {text: 'No'},
+      {
+        text: 'Yes',
+        style: 'destructive',
         onPress: async () => {
           setConnectionHistory([]);
           setParkedLocation(null);
@@ -714,29 +788,48 @@ const BluetoothDemoScreen = () => {
     ]);
   };
 
-  // ---------------------------
-  // RENDER
-  // ---------------------------
-  if (bootLoading) {
-    return (
-      <SafeAreaView style={styles.loading}>
-        <ActivityIndicator size="large" color="#FFF" />
-        <Text style={styles.loadingText}>Starting...</Text>
-      </SafeAreaView>
-    );
-  }
-
+  // ─── DERIVED VALUES ───────────────────────────────────────
   const lastDistance =
     !isConnected && parkedLocation && drivingLocation
       ? distanceMeters(drivingLocation, parkedLocation)
       : null;
 
-  const arBadgeText = ActivityRecognitionModule
+  const arModuleAvailable = !!ActivityRecognitionModule;
+
+  const arBadgeText = arModuleAvailable
     ? arEnabled
-      ? `AR ${niceActivityLabel(arState)}`
+      ? `${activityIcon(arState)} ${niceActivityLabel(arState)}`
       : 'AR OFF'
     : 'AR N/A';
 
+  const arCardColor = () => {
+    switch (arState) {
+      case 'in_vehicle':
+        return '#1565C0';
+      case 'walking':
+        return '#2E7D32';
+      case 'running':
+        return '#E65100';
+      case 'on_bicycle':
+        return '#6A1B9A';
+      case 'still':
+        return '#37474F';
+      default:
+        return '#455A64';
+    }
+  };
+
+  // ─── LOADING SCREEN ───────────────────────────────────────
+  if (bootLoading) {
+    return (
+      <SafeAreaView style={styles.loading}>
+        <ActivityIndicator size="large" color="#FFF" />
+        <Text style={styles.loadingText}>Starting ParkIt...</Text>
+      </SafeAreaView>
+    );
+  }
+
+  // ─── MAIN RENDER ──────────────────────────────────────────
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar
@@ -744,84 +837,147 @@ const BluetoothDemoScreen = () => {
         backgroundColor={isConnected ? '#2E7D32' : '#D84315'}
       />
 
+      {/* ── Header ── */}
       <View
         style={[
           styles.header,
           {backgroundColor: isConnected ? '#2E7D32' : '#D84315'},
         ]}>
-        <Text style={styles.title}>ParkIt</Text>
+        <Text style={styles.title}>🅿 ParkIt</Text>
         <Text style={styles.subtitle}>Smart Parking Detection</Text>
 
         <View style={styles.badges}>
           <View style={styles.badge}>
             <Text style={styles.badgeText}>
-              {bluetoothEnabled ? 'BT ON' : 'BT OFF'}
+              {bluetoothEnabled ? '🔵 BT ON' : '⚫ BT OFF'}
             </Text>
           </View>
 
           <View style={styles.badge}>
             <Text style={styles.badgeText}>
-              {isGettingLocation ? 'GPS...' : locationStatus}
+              {isGettingLocation ? '📡 GPS...' : locationStatus}
             </Text>
           </View>
 
-          <View style={styles.badge}>
+          <View style={[styles.badge, !arModuleAvailable && styles.badgeWarning]}>
             <Text style={styles.badgeText}>{arBadgeText}</Text>
           </View>
 
           {isBtSyncing && (
             <View style={styles.badge}>
-              <Text style={styles.badgeText}>Sync...</Text>
+              <Text style={styles.badgeText}>⏳ Syncing...</Text>
             </View>
           )}
         </View>
       </View>
 
-      <ScrollView style={styles.scroll}>
-        {/* Activity Recognition Card */}
-        <View style={styles.card}>
+      <ScrollView style={styles.scroll} showsVerticalScrollIndicator={false}>
+        {/* ── Activity Recognition Card ── */}
+        <View style={[styles.card, styles.arCard]}>
+          {/* Header */}
           <View style={styles.row}>
-            <Text style={styles.cardTitle}>Activity Recognition</Text>
-
-            <View style={{flexDirection: 'row'}}>
+            <Text style={styles.cardTitle}>🏃 Activity Recognition</Text>
+            <View style={{flexDirection: 'row', gap: 8}}>
               <TouchableOpacity
-                style={[
-                  styles.btn,
-                  {marginRight: 8, backgroundColor: '#455A64'},
-                ]}
+                style={[styles.btn, {backgroundColor: '#455A64'}]}
                 onPress={readLastAr}>
-                <Text style={styles.btnText}>Refresh</Text>
+                <Text style={styles.btnText}>↻</Text>
               </TouchableOpacity>
-
               <TouchableOpacity
                 style={[
                   styles.btn,
                   {backgroundColor: arEnabled ? '#D32F2F' : '#1976D2'},
                 ]}
                 onPress={arEnabled ? stopAr : startAr}>
-                <Text style={styles.btnText}>{arEnabled ? 'Stop' : 'Start'}</Text>
+                <Text style={styles.btnText}>
+                  {arEnabled ? '⏹' : '▶'}
+                </Text>
               </TouchableOpacity>
             </View>
           </View>
 
-          <Text style={styles.locStatus}>
-            Permission: {arPermission ? '✅ Granted' : '❌ Not granted'}
+          {/* Module not found warning */}
+          {!arModuleAvailable && (
+            <View style={styles.warningBox}>
+              <Text style={styles.warningText}>
+                ⚠️ ActivityRecognitionModule not found!{'\n'}
+                MainApplication.java me package add karo.
+              </Text>
+            </View>
+          )}
+
+          {/* Status */}
+          <Text style={styles.arInfoText}>
+            Permission: {arPermission ? '✅' : '❌'} | Status:{' '}
+            {arEnabled ? '🟢 ON' : '🔴 OFF'}
           </Text>
 
-          <Text style={styles.locStatus}>
-            State: {niceActivityLabel(arState)} | Confidence:{' '}
-            {Math.round(arConfidence)}%
+          {/* Big Activity Display */}
+          <View style={[styles.activityBig, {backgroundColor: arCardColor()}]}>
+            <Text style={styles.activityIcon}>{activityIcon(arState)}</Text>
+            <Text style={styles.activityLabel}>{niceActivityLabel(arState)}</Text>
+            <Text style={styles.activityConf}>
+              {Math.round(arConfidence)}% confidence
+            </Text>
+          </View>
+
+          {/* Last Updated */}
+          <Text style={styles.arInfoText}>
+            Last: {arUpdatedAt ? new Date(arUpdatedAt).toLocaleTimeString() : 'Never'}
           </Text>
 
-          <Text style={styles.hint}>
-            Updated: {arUpdatedAt ? new Date(arUpdatedAt).toLocaleString() : 'N/A'}
-          </Text>
+          {/* Top activities debug */}
+          {arTopActivities.length > 0 && (
+            <View style={styles.topBox}>
+              <Text style={styles.topTitle}>Top Activities:</Text>
+              {arTopActivities.map((a, i) => (
+                <Text key={i} style={styles.topItem}>
+                  {activityIcon(a.name)} {(a.name || 'unknown').toUpperCase()} —{' '}
+                  {a.confidence}%
+                </Text>
+              ))}
+            </View>
+          )}
+
+          {/* ✅ Simulate Buttons */}
+          <View style={styles.simulateSection}>
+            <Text style={styles.simulateTitle}>🧪 Test (Simulate):</Text>
+            <View style={styles.simulateRow}>
+              <TouchableOpacity
+                style={[styles.simBtn, {backgroundColor: '#37474F'}]}
+                onPress={() => testSimulate('still', 90)}>
+                <Text style={styles.simBtnText}>🧍 Still</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.simBtn, {backgroundColor: '#2E7D32'}]}
+                onPress={() => testSimulate('walking', 85)}>
+                <Text style={styles.simBtnText}>🚶 Walk</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.simBtn, {backgroundColor: '#E65100'}]}
+                onPress={() => testSimulate('running', 80)}>
+                <Text style={styles.simBtnText}>🏃 Run</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.simBtn, {backgroundColor: '#1565C0'}]}
+                onPress={() => testSimulate('in_vehicle', 95)}>
+                <Text style={styles.simBtnText}>🚗 Car</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Debug button */}
+            <TouchableOpacity
+              style={[styles.simBtn, {backgroundColor: '#9C27B0', marginTop: 10, alignSelf: 'flex-start'}]}
+              onPress={testDebug}>
+              <Text style={styles.simBtnText}>🔍 Debug Info</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
-        {/* Device Card */}
+        {/* ── Device Card ── */}
         <View style={styles.card}>
           <View style={styles.row}>
-            <Text style={styles.cardTitle}>Tracking Device</Text>
+            <Text style={styles.cardTitle}>🎧 Tracking Device</Text>
             <TouchableOpacity
               style={styles.btn}
               onPress={() => {
@@ -829,7 +985,7 @@ const BluetoothDemoScreen = () => {
                 setShowDeviceModal(true);
               }}>
               <Text style={styles.btnText}>
-                {selectedDevice ? 'Change' : 'Select'}
+                {selectedDevice ? '✏️ Change' : '+ Select'}
               </Text>
             </TouchableOpacity>
           </View>
@@ -846,31 +1002,47 @@ const BluetoothDemoScreen = () => {
               </TouchableOpacity>
             </View>
           ) : (
-            <Text style={styles.muted}>Tap "Select" to choose device</Text>
+            <Text style={styles.muted}>
+              Koi device select nahi hai.{'\n'}
+              "Select" tap karke device choose karein.
+            </Text>
           )}
         </View>
 
-        {/* Status Card */}
+        {/* ── Status Card ── */}
         <View
           style={[
             styles.statusCard,
             {backgroundColor: isConnected ? '#43A047' : '#FF5722'},
           ]}>
-          <Animated.View style={[styles.dot, {transform: [{scale: pulseAnim}]}]} />
+          <Animated.View
+            style={[styles.dot, {transform: [{scale: pulseAnim}]}]}
+          />
           <Text style={styles.statusTitle}>
-            {isConnected ? 'DRIVING' : 'PARKED'}
+            {isConnected ? '🚗 DRIVING' : '🅿 PARKED'}
           </Text>
           <Text style={styles.statusSub}>
             {isConnected
-              ? connectedDevice?.name
-              : selectedDevice?.name || 'Select device'}
+              ? connectedDevice?.name || 'Connected'
+              : selectedDevice?.name || 'Select a device'}
           </Text>
 
-          {connectionTime && <Text style={styles.statusTime}>{connectionTime}</Text>}
+          {connectionTime && (
+            <Text style={styles.statusTime}>⏰ {connectionTime}</Text>
+          )}
+
+          {/* Show current activity in status card */}
+          {arEnabled && arState !== 'unknown' && (
+            <View style={styles.arStatusBadge}>
+              <Text style={styles.arStatusText}>
+                {activityIcon(arState)} {niceActivityLabel(arState)}
+              </Text>
+            </View>
+          )}
 
           {isConnected && drivingLocation && (
             <Text style={styles.smallWhite}>
-              Start: {formatLatLng6(drivingLocation)}
+              📍 Start: {formatLatLng6(drivingLocation)}
             </Text>
           )}
 
@@ -879,23 +1051,22 @@ const BluetoothDemoScreen = () => {
               <TouchableOpacity
                 style={styles.locBtn}
                 onPress={() => openMaps(parkedLocation)}>
-                <Text style={styles.locBtnText}>View Parking</Text>
+                <Text style={styles.locBtnText}>📍 View Parking Spot</Text>
               </TouchableOpacity>
 
               {Number.isFinite(lastDistance) && (
                 <Text style={styles.smallWhite}>
-                  Distance (Start → Park): {Math.round(lastDistance)} m
+                  📏 Distance: {Math.round(lastDistance)} m
                 </Text>
               )}
             </>
           )}
         </View>
 
-        {/* Parked Location */}
+        {/* ── Parked Location Card ── */}
         {!isConnected && parkedLocation && (
           <View style={styles.parkedCard}>
-            <Text style={styles.parkedTitle}>Parked Location</Text>
-
+            <Text style={styles.parkedTitle}>🅿 Parked Location</Text>
             <Text style={styles.parkedBig}>{formatLatLng6(parkedLocation)}</Text>
 
             <Text style={styles.parkedSource}>
@@ -907,37 +1078,38 @@ const BluetoothDemoScreen = () => {
 
             {Number.isFinite(lastDistance) && (
               <Text style={styles.parkedSource}>
-                Distance (Start → Park): {Math.round(lastDistance)} m
+                📏 Distance (Start → Park): {Math.round(lastDistance)} m
               </Text>
             )}
 
             <TouchableOpacity
               style={styles.mapsBtn}
               onPress={() => openMaps(parkedLocation)}>
-              <Text style={styles.mapsBtnText}>Open Google Maps</Text>
+              <Text style={styles.mapsBtnText}>🗺 Open Google Maps</Text>
             </TouchableOpacity>
           </View>
         )}
 
-        {/* Location Test */}
+        {/* ── Location Test Card ── */}
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Location</Text>
+          <Text style={styles.cardTitle}>📡 Location</Text>
           <Text style={styles.locStatus}>Status: {locationStatus}</Text>
           <TouchableOpacity style={styles.testBtn} onPress={testLocation}>
-            <Text style={styles.testBtnText}>Test LIVE GPS</Text>
+            <Text style={styles.testBtnText}>📍 Test LIVE GPS</Text>
           </TouchableOpacity>
           <Text style={styles.hint}>
-            Note: Same jagah khade ho to distance 0–20m aa sakta hai (GPS accuracy).
+            Tip: Same jagah khade ho to distance 0–20m aa sakta hai (GPS
+            accuracy).
           </Text>
         </View>
 
-        {/* History */}
+        {/* ── History Card ── */}
         <View style={styles.card}>
           <View style={styles.row}>
-            <Text style={styles.cardTitle}>History</Text>
+            <Text style={styles.cardTitle}>📋 History</Text>
             {connectionHistory.length > 0 && (
               <TouchableOpacity onPress={clearHistory}>
-                <Text style={styles.clearBtn}>Clear</Text>
+                <Text style={styles.clearBtn}>🗑 Clear</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -951,14 +1123,26 @@ const BluetoothDemoScreen = () => {
 
                 <View style={{flex: 1}}>
                   <Text style={styles.historyDevice}>{item.device}</Text>
+
                   <Text style={styles.historyTime}>
-                    {item.time} | {item.date}
+                    ⏰ {item.time} | 📅 {item.date}
                   </Text>
+
+                  {/* Activity at that time */}
+                  {item.activity && item.activity !== 'unknown' && (
+                    <Text style={styles.historyActivity}>
+                      {activityIcon(item.activity)}{' '}
+                      {niceActivityLabel(item.activity)}
+                    </Text>
+                  )}
 
                   {item.location && (
                     <TouchableOpacity onPress={() => openMaps(item.location)}>
                       <Text style={styles.historyLoc}>
-                        {formatLatLng6(item.location)} ({item.location.source})
+                        📍 {formatLatLng6(item.location)}{' '}
+                        <Text style={{color: '#888'}}>
+                          ({item.location.source})
+                        </Text>
                       </Text>
                     </TouchableOpacity>
                   )}
@@ -966,25 +1150,31 @@ const BluetoothDemoScreen = () => {
                   {item.type === 'disconnect' &&
                     Number.isFinite(item.distanceMeters) && (
                       <Text style={styles.historyDistance}>
-                        Distance: {Math.round(item.distanceMeters)} m
+                        📏 Distance: {Math.round(item.distanceMeters)} m
                       </Text>
                     )}
                 </View>
               </View>
             ))
           ) : (
-            <Text style={styles.muted}>No history yet</Text>
+            <Text style={styles.muted}>
+              History nahi hai abhi.{'\n'}
+              Bluetooth device connect/disconnect karo.
+            </Text>
           )}
         </View>
 
-        <TouchableOpacity style={styles.refreshBtn} onPress={startBluetoothListening}>
-          <Text style={styles.refreshText}>Refresh</Text>
+        {/* ── Refresh BT Button ── */}
+        <TouchableOpacity
+          style={styles.refreshBtn}
+          onPress={startBluetoothListening}>
+          <Text style={styles.refreshText}>🔄 Refresh Bluetooth</Text>
         </TouchableOpacity>
 
-        <View style={{height: 40}} />
+        <View style={{height: 50}} />
       </ScrollView>
 
-      {/* Device Modal */}
+      {/* ── Device Select Modal ── */}
       <Modal visible={showDeviceModal} transparent animationType="slide">
         <View style={styles.modalBg}>
           <View style={styles.modalBox}>
@@ -1019,11 +1209,16 @@ const BluetoothDemoScreen = () => {
                 )}
               />
             ) : (
-              <Text style={styles.muted}>No paired devices found</Text>
+              <Text style={styles.muted}>
+                Koi paired device nahi mila.{'\n'}
+                Phone me Bluetooth settings me device pair karein.
+              </Text>
             )}
 
-            <TouchableOpacity style={styles.modalRefresh} onPress={startBluetoothListening}>
-              <Text style={styles.modalRefreshText}>Refresh</Text>
+            <TouchableOpacity
+              style={styles.modalRefresh}
+              onPress={startBluetoothListening}>
+              <Text style={styles.modalRefreshText}>🔄 Refresh</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -1032,79 +1227,165 @@ const BluetoothDemoScreen = () => {
   );
 };
 
+// ─── STYLES ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  container: {flex: 1, backgroundColor: '#F5F5F5'},
+  container: {flex: 1, backgroundColor: '#F0F2F5'},
+
   loading: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#1A237E',
   },
-  loadingText: {color: '#FFF', fontSize: 18, marginTop: 10},
+  loadingText: {color: '#FFF', fontSize: 18, marginTop: 12},
 
-  header: {padding: 20, alignItems: 'center'},
-  title: {fontSize: 26, fontWeight: 'bold', color: '#FFF'},
-  subtitle: {fontSize: 12, color: '#FFF', opacity: 0.9, marginTop: 2},
-
+  // Header
+  header: {
+    paddingTop: 16,
+    paddingBottom: 20,
+    paddingHorizontal: 20,
+    alignItems: 'center',
+  },
+  title: {fontSize: 28, fontWeight: 'bold', color: '#FFF'},
+  subtitle: {fontSize: 12, color: '#FFF', opacity: 0.85, marginTop: 2},
   badges: {
     flexDirection: 'row',
-    marginTop: 10,
+    marginTop: 12,
     flexWrap: 'wrap',
     justifyContent: 'center',
+    gap: 6,
   },
   badge: {
     backgroundColor: 'rgba(255,255,255,0.2)',
     paddingHorizontal: 12,
     paddingVertical: 5,
     borderRadius: 12,
-    marginHorizontal: 4,
-    marginVertical: 4,
   },
+  badgeWarning: {backgroundColor: 'rgba(255,160,0,0.5)'},
   badgeText: {color: '#FFF', fontSize: 12, fontWeight: '600'},
 
   scroll: {flex: 1, padding: 12},
 
+  // Cards
   card: {
     backgroundColor: '#FFF',
-    borderRadius: 12,
-    padding: 15,
+    borderRadius: 14,
+    padding: 16,
     marginBottom: 12,
     elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: {width: 0, height: 1},
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
   },
+  arCard: {borderLeftWidth: 4, borderLeftColor: '#1976D2'},
+
   row: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 10,
   },
-  cardTitle: {fontSize: 16, fontWeight: 'bold', color: '#333'},
+  cardTitle: {fontSize: 16, fontWeight: 'bold', color: '#222'},
 
   btn: {
     backgroundColor: '#1976D2',
     paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: 12,
+    paddingVertical: 7,
+    borderRadius: 10,
   },
   btnText: {color: '#FFF', fontWeight: '600', fontSize: 13},
 
+  // Warning
+  warningBox: {
+    backgroundColor: '#FFF3E0',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 10,
+    borderLeftWidth: 3,
+    borderLeftColor: '#FF9800',
+  },
+  warningText: {color: '#E65100', fontSize: 12, lineHeight: 18},
+
+  // AR Activity display
+  activityBig: {
+    borderRadius: 14,
+    padding: 20,
+    alignItems: 'center',
+    marginVertical: 10,
+  },
+  activityIcon: {fontSize: 42},
+  activityLabel: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: '#FFF',
+    marginTop: 6,
+  },
+  activityConf: {fontSize: 13, color: 'rgba(255,255,255,0.85)', marginTop: 4},
+
+  arInfoText: {fontSize: 13, color: '#555', marginBottom: 4},
+
+  topBox: {
+    backgroundColor: '#F5F5F5',
+    borderRadius: 10,
+    padding: 10,
+    marginTop: 8,
+  },
+  topTitle: {fontSize: 12, fontWeight: 'bold', color: '#333', marginBottom: 4},
+  topItem: {fontSize: 12, color: '#555', marginVertical: 2},
+
+  // Simulate buttons
+  simulateSection: {
+    marginTop: 15,
+    paddingTop: 15,
+    borderTopWidth: 1,
+    borderTopColor: '#E0E0E0',
+  },
+  simulateTitle: {
+    fontSize: 13,
+    color: '#666',
+    marginBottom: 10,
+    fontWeight: '600',
+  },
+  simulateRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  simBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
+    minWidth: 70,
+    alignItems: 'center',
+  },
+  simBtnText: {
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+
+  // Device
   deviceBox: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#E3F2FD',
-    padding: 12,
-    borderRadius: 10,
+    padding: 14,
+    borderRadius: 12,
   },
-  deviceIcon: {fontSize: 26, marginRight: 12},
+  deviceIcon: {fontSize: 28, marginRight: 12},
   deviceName: {fontSize: 15, fontWeight: 'bold', color: '#1565C0'},
-  deviceAddr: {fontSize: 11, color: '#64B5F6'},
-  x: {fontSize: 20, color: '#F44336', paddingHorizontal: 8},
+  deviceAddr: {fontSize: 11, color: '#64B5F6', marginTop: 2},
+  x: {fontSize: 22, color: '#F44336', paddingHorizontal: 8},
   muted: {
     color: '#888',
     fontStyle: 'italic',
     textAlign: 'center',
     padding: 10,
+    lineHeight: 20,
   },
 
+  // Status card
   statusCard: {
     borderRadius: 18,
     padding: 28,
@@ -1117,25 +1398,35 @@ const styles = StyleSheet.create({
     height: 22,
     borderRadius: 11,
     backgroundColor: 'rgba(255,255,255,0.4)',
-    marginBottom: 12,
+    marginBottom: 10,
   },
-  statusTitle: {fontSize: 24, fontWeight: 'bold', color: '#FFF'},
+  statusTitle: {fontSize: 26, fontWeight: 'bold', color: '#FFF'},
   statusSub: {fontSize: 14, color: '#FFF', opacity: 0.9, marginTop: 4},
   statusTime: {fontSize: 13, color: '#FFF', opacity: 0.8, marginTop: 6},
-  smallWhite: {fontSize: 12, color: '#FFF', opacity: 0.95, marginTop: 8},
+  smallWhite: {fontSize: 12, color: '#FFF', opacity: 0.95, marginTop: 10},
+
+  arStatusBadge: {
+    backgroundColor: 'rgba(255,255,255,0.25)',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 20,
+    marginTop: 10,
+  },
+  arStatusText: {color: '#FFF', fontWeight: '700', fontSize: 14},
 
   locBtn: {
     marginTop: 14,
     backgroundColor: 'rgba(255,255,255,0.25)',
-    paddingHorizontal: 18,
+    paddingHorizontal: 20,
     paddingVertical: 10,
-    borderRadius: 18,
+    borderRadius: 20,
   },
   locBtnText: {color: '#FFF', fontWeight: 'bold', fontSize: 14},
 
+  // Parked card
   parkedCard: {
     backgroundColor: '#FFF',
-    borderRadius: 12,
+    borderRadius: 14,
     padding: 16,
     marginBottom: 12,
     borderLeftWidth: 4,
@@ -1148,69 +1439,81 @@ const styles = StyleSheet.create({
     color: '#E65100',
     marginBottom: 6,
   },
-  parkedBig: {fontSize: 20, fontWeight: '700', color: '#333', marginTop: 4},
-  parkedSource: {fontSize: 11, color: '#888', marginTop: 8},
+  parkedBig: {fontSize: 20, fontWeight: '700', color: '#222', marginTop: 4},
+  parkedSource: {fontSize: 11, color: '#888', marginTop: 6},
   mapsBtn: {
     backgroundColor: '#4285F4',
     marginTop: 12,
-    padding: 12,
+    padding: 13,
     borderRadius: 10,
     alignItems: 'center',
   },
   mapsBtnText: {color: '#FFF', fontWeight: 'bold', fontSize: 14},
 
-  locStatus: {fontSize: 12, color: '#666', marginBottom: 10},
+  // Location
+  locStatus: {fontSize: 13, color: '#555', marginBottom: 10},
   testBtn: {
     backgroundColor: '#9C27B0',
-    padding: 12,
+    padding: 13,
     borderRadius: 10,
     alignItems: 'center',
   },
   testBtnText: {color: '#FFF', fontWeight: 'bold', fontSize: 14},
-  hint: {fontSize: 11, color: '#888', textAlign: 'center', marginTop: 8},
+  hint: {
+    fontSize: 11,
+    color: '#888',
+    textAlign: 'center',
+    marginTop: 8,
+    lineHeight: 16,
+  },
 
-  clearBtn: {fontSize: 12, color: '#F44336'},
+  clearBtn: {fontSize: 13, color: '#F44336', fontWeight: '600'},
 
+  // History
   historyItem: {
     flexDirection: 'row',
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#EEE',
+    borderBottomColor: '#F0F0F0',
     alignItems: 'flex-start',
   },
   historyIcon: {fontSize: 18, marginRight: 10, marginTop: 2},
-  historyDevice: {fontSize: 14, fontWeight: '600', color: '#333'},
+  historyDevice: {fontSize: 14, fontWeight: '600', color: '#222'},
   historyTime: {fontSize: 11, color: '#666', marginTop: 2},
-  historyLoc: {fontSize: 11, color: '#1976D2', marginTop: 2},
-  historyDistance: {
+  historyActivity: {
     fontSize: 11,
-    color: '#444',
-    marginTop: 4,
+    color: '#1976D2',
+    marginTop: 2,
     fontWeight: '600',
   },
+  historyLoc: {fontSize: 11, color: '#1976D2', marginTop: 3},
+  historyDistance: {fontSize: 11, color: '#444', marginTop: 4, fontWeight: '600'},
 
+  // Refresh button
   refreshBtn: {
     backgroundColor: '#1976D2',
-    padding: 14,
+    padding: 15,
     borderRadius: 12,
     alignItems: 'center',
+    elevation: 2,
   },
   refreshText: {color: '#FFF', fontSize: 15, fontWeight: 'bold'},
 
+  // Modal
   modalBg: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: 'rgba(0,0,0,0.55)',
     justifyContent: 'flex-end',
   },
   modalBox: {
     backgroundColor: '#FFF',
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
-    padding: 18,
-    maxHeight: '60%',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 20,
+    maxHeight: '65%',
   },
-  modalTitle: {fontSize: 18, fontWeight: 'bold'},
-  modalX: {fontSize: 26, color: '#888'},
+  modalTitle: {fontSize: 18, fontWeight: 'bold', color: '#222'},
+  modalX: {fontSize: 26, color: '#999'},
   modalDevice: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1224,18 +1527,18 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: '#1976D2',
   },
-  modalDeviceIcon: {fontSize: 24, marginRight: 12},
-  modalDeviceName: {fontSize: 15, fontWeight: '600'},
-  modalDeviceAddr: {fontSize: 11, color: '#888'},
-  check: {fontSize: 20, color: '#4CAF50', fontWeight: 'bold'},
+  modalDeviceIcon: {fontSize: 26, marginRight: 12},
+  modalDeviceName: {fontSize: 15, fontWeight: '600', color: '#222'},
+  modalDeviceAddr: {fontSize: 11, color: '#888', marginTop: 2},
+  check: {fontSize: 22, color: '#4CAF50', fontWeight: 'bold'},
   modalRefresh: {
     backgroundColor: '#E3F2FD',
     padding: 14,
     borderRadius: 12,
     alignItems: 'center',
-    marginTop: 10,
+    marginTop: 8,
   },
-  modalRefreshText: {color: '#1976D2', fontWeight: 'bold'},
+  modalRefreshText: {color: '#1976D2', fontWeight: 'bold', fontSize: 14},
 });
 
 export default BluetoothDemoScreen;

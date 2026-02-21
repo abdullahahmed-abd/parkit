@@ -6,13 +6,13 @@ react {
     autolinkLibrariesWithApp()
 }
 
-def enableProguardInReleaseBuilds = false   // ✅ PROGUARD DISABLED (No Crash)
+def enableProguardInReleaseBuilds = false
 def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
 
 android {
     ndkVersion rootProject.ext.ndkVersion
     buildToolsVersion rootProject.ext.buildToolsVersion
-    compileSdk rootProject.ext.compileSdkVersion
+    compileSdk rootProject.ext.compileSdkVersion  // ✅ FIXED
 
     namespace "com.islamicbank.newapp"
 
@@ -22,19 +22,17 @@ android {
 
     defaultConfig {
         applicationId "com.islamicbank.newapp"
-        minSdkVersion rootProject.ext.minSdkVersion
-        targetSdkVersion rootProject.ext.targetSdkVersion
+        minSdkVersion rootProject.ext.minSdkVersion      // ✅ FIXED
+        targetSdkVersion rootProject.ext.targetSdkVersion // ✅ FIXED
 
         versionCode 1
         versionName "3.0.4"
 
-        // ✅ 32-bit + 64-bit support
         ndk {
             abiFilters "armeabi-v7a", "arm64-v8a"
         }
     }
 
-    // ✅ Single universal APK
     splits {
         abi {
             enable false
@@ -70,9 +68,25 @@ android {
         }
     }
 
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+
     lint {
         checkReleaseBuilds false
         abortOnError false
+    }
+
+    packagingOptions {
+        pickFirst 'lib/armeabi-v7a/libc++_shared.so'
+        pickFirst 'lib/arm64-v8a/libc++_shared.so'
+        pickFirst 'lib/x86/libc++_shared.so'
+        pickFirst 'lib/x86_64/libc++_shared.so'
     }
 }
 
@@ -85,6 +99,8 @@ dependencies {
         implementation(jscFlavor)
     }
 
-    implementation("com.google.android.gms:play-services-location:21.0.1")
+    implementation("com.google.android.gms:play-services-location:21.3.0")
+    implementation("com.google.android.gms:play-services-base:18.5.0")
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.appcompat:appcompat:1.7.0")
 }

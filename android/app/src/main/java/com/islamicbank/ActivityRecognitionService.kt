@@ -16,151 +16,183 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.google.android.gms.location.ActivityRecognition
 import com.google.android.gms.location.ActivityRecognitionClient
+import com.google.android.gms.location.ActivityTransition
+import com.google.android.gms.location.ActivityTransitionRequest
+import com.google.android.gms.location.DetectedActivity
 
 class ActivityRecognitionService : Service() {
 
-  companion object {
-    const val ACTION_START = "AR_START"
-    const val ACTION_STOP = "AR_STOP"
-    const val EXTRA_INTERVAL_MS = "intervalMs"
+    companion object {
+        const val ACTION_START = "AR_START"
+        const val ACTION_STOP = "AR_STOP"
+        const val EXTRA_INTERVAL_MS = "intervalMs"
+        private const val CHANNEL_ID = "ar_channel"
+        private const val NOTIF_ID = 1001
+        private const val TAG = "ARService"
+    }
 
-    private const val CHANNEL_ID = "activity_recognition_channel"
-    private const val NOTIF_ID = 1001
-    private const val TAG = "ARService"
-  }
+    private lateinit var client: ActivityRecognitionClient
 
-  private lateinit var client: ActivityRecognitionClient
+    override fun onCreate() {
+        super.onCreate()
+        client = ActivityRecognition.getClient(this)
+        Log.d(TAG, "onCreate")
+    }
 
-  override fun onCreate() {
-    super.onCreate()
-    client = ActivityRecognition.getClient(this)
-  }
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.d(TAG, "onStartCommand action=${intent?.action}")
 
-  override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-    try {
-      when (intent?.action) {
-        ACTION_STOP -> {
-          stopUpdatesSafe()
-          stopForeground(STOP_FOREGROUND_REMOVE)
-          stopSelf()
-          return START_NOT_STICKY
+        when (intent?.action) {
+            ACTION_STOP -> {
+                Log.i(TAG, "Stopping...")
+                stopAllUpdates()
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return START_NOT_STICKY
+            }
+
+            ACTION_START, null -> {
+                val interval = intent?.getIntExtra(EXTRA_INTERVAL_MS, 5000) ?: 5000
+                Log.i(TAG, "Starting with interval=$interval ms")
+                startForegroundNotification()
+                requestUpdates(interval)
+                requestTransitions()
+                return START_STICKY
+            }
         }
 
-        ACTION_START, null -> {
-          val interval = intent?.getIntExtra(EXTRA_INTERVAL_MS, 5000) ?: 5000
-          startInForegroundSafe()
-          startUpdatesSafe(interval)
-          return START_STICKY
+        return START_STICKY
+    }
+
+    private fun hasPermission(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return true
+        return ContextCompat.checkSelfPermission(
+            this, Manifest.permission.ACTIVITY_RECOGNITION
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun startForegroundNotification() {
+        try {
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                nm.createNotificationChannel(
+                    NotificationChannel(CHANNEL_ID, "Activity", NotificationManager.IMPORTANCE_LOW)
+                )
+            }
+
+            val notif = NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("ParkIt Active")
+                .setContentText("Detecting activity...")
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setOngoing(true)
+                .build()
+
+            if (Build.VERSION.SDK_INT >= 34) {
+                startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            } else if (Build.VERSION.SDK_INT >= 29) {
+                startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            } else {
+                startForeground(NOTIF_ID, notif)
+            }
+
+            Log.i(TAG, "✅ Foreground notification started")
+
+        } catch (e: Exception) {
+            Log.e(TAG, "startForeground error", e)
         }
-      }
-    } catch (e: Exception) {
-      Log.e(TAG, "onStartCommand crashed", e)
-      stopForeground(STOP_FOREGROUND_REMOVE)
-      stopSelf()
-      return START_NOT_STICKY
     }
 
-    return START_STICKY
-  }
-
-  private fun hasActivityPermission(): Boolean {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return true
-    return ContextCompat.checkSelfPermission(this, Manifest.permission.ACTIVITY_RECOGNITION) ==
-      PackageManager.PERMISSION_GRANTED
-  }
-
-  private fun startInForegroundSafe() {
-    try {
-      val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        val channel = NotificationChannel(
-          CHANNEL_ID,
-          "Activity Recognition",
-          NotificationManager.IMPORTANCE_LOW
-        )
-        nm.createNotificationChannel(channel)
-      }
-
-      val notif = NotificationCompat.Builder(this, CHANNEL_ID)
-        .setContentTitle("Activity detection running")
-        .setContentText("Detecting: still / walk / run / vehicle / bicycle")
-        .setSmallIcon(R.mipmap.ic_launcher)
-        .setOngoing(true)
-        .build()
-
-      if (Build.VERSION.SDK_INT >= 29) {
-        startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-      } else {
-        startForeground(NOTIF_ID, notif)
-      }
-    } catch (se: SecurityException) {
-      Log.e(TAG, "startForeground SecurityException", se)
-      stopSelf()
-    } catch (e: Exception) {
-      Log.e(TAG, "startForeground failed", e)
-      stopSelf()
-    }
-  }
-
-  // ✅ FIX: PendingIntent must be MUTABLE on Android 12+ so GMS can attach extras
-  private fun pendingIntent(): PendingIntent {
-    val intent = Intent(this, ActivityRecognitionReceiver::class.java)
-
-    val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
-    } else {
-      PendingIntent.FLAG_UPDATE_CURRENT
-    }
-
-    return PendingIntent.getBroadcast(this, 101, intent, flags)
-  }
-
-  private fun startUpdatesSafe(intervalMs: Int) {
-    val prefs = getSharedPreferences("activity_recognition", MODE_PRIVATE)
-
-    if (!hasActivityPermission()) {
-      Log.e(TAG, "ACTIVITY_RECOGNITION permission not granted. Stopping.")
-      prefs.edit().putBoolean("enabled", false).apply()
-      stopSelf()
-      return
-    }
-
-    prefs.edit().putBoolean("enabled", true).putInt("intervalMs", intervalMs).apply()
-
-    try {
-      client.requestActivityUpdates(intervalMs.toLong(), pendingIntent())
-        .addOnSuccessListener {
-          Log.i(TAG, "requestActivityUpdates OK interval=$intervalMs")
+    private fun pendingIntent(requestCode: Int): PendingIntent {
+        val intent = Intent(this, ActivityRecognitionReceiver::class.java)
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+        } else {
+            PendingIntent.FLAG_UPDATE_CURRENT
         }
-        .addOnFailureListener { e ->
-          Log.e(TAG, "requestActivityUpdates FAILED", e)
-          prefs.edit().putBoolean("enabled", false).apply()
-          stopSelf()
+        return PendingIntent.getBroadcast(this, requestCode, intent, flags)
+    }
+
+    private fun requestUpdates(intervalMs: Int) {
+        if (!hasPermission()) {
+            Log.e(TAG, "❌ No AR permission!")
+            return
         }
-    } catch (se: SecurityException) {
-      Log.e(TAG, "requestActivityUpdates SecurityException", se)
-      prefs.edit().putBoolean("enabled", false).apply()
-      stopSelf()
-    } catch (e: Exception) {
-      Log.e(TAG, "requestActivityUpdates crashed", e)
-      prefs.edit().putBoolean("enabled", false).apply()
-      stopSelf()
+
+        Log.d(TAG, "Requesting activity updates every $intervalMs ms...")
+
+        client.requestActivityUpdates(intervalMs.toLong(), pendingIntent(100))
+            .addOnSuccessListener {
+                Log.i(TAG, "✅ requestActivityUpdates SUCCESS")
+
+                getSharedPreferences("activity_recognition", MODE_PRIVATE)
+                    .edit()
+                    .putBoolean("enabled", true)
+                    .apply()
+            }
+            .addOnFailureListener { e ->
+                Log.e(TAG, "❌ requestActivityUpdates FAILED: ${e.message}")
+            }
     }
-  }
 
-  private fun stopUpdatesSafe() {
-    val prefs = getSharedPreferences("activity_recognition", MODE_PRIVATE)
-    prefs.edit().putBoolean("enabled", false).apply()
+    private fun requestTransitions() {
+        if (!hasPermission()) return
 
-    try {
-      client.removeActivityUpdates(pendingIntent())
-        .addOnSuccessListener { Log.i(TAG, "removeActivityUpdates OK") }
-        .addOnFailureListener { e -> Log.e(TAG, "removeActivityUpdates FAILED", e) }
-    } catch (e: Exception) {
-      Log.e(TAG, "removeActivityUpdates crashed", e)
+        try {
+            val transitions = mutableListOf<ActivityTransition>()
+
+            listOf(
+                DetectedActivity.STILL,
+                DetectedActivity.WALKING,
+                DetectedActivity.RUNNING,
+                DetectedActivity.IN_VEHICLE,
+                DetectedActivity.ON_BICYCLE
+            ).forEach { activity ->
+                transitions.add(
+                    ActivityTransition.Builder()
+                        .setActivityType(activity)
+                        .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_ENTER)
+                        .build()
+                )
+                transitions.add(
+                    ActivityTransition.Builder()
+                        .setActivityType(activity)
+                        .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_EXIT)
+                        .build()
+                )
+            }
+
+            val request = ActivityTransitionRequest(transitions)
+
+            client.requestActivityTransitionUpdates(request, pendingIntent(101))
+                .addOnSuccessListener {
+                    Log.i(TAG, "✅ requestActivityTransitionUpdates SUCCESS")
+                }
+                .addOnFailureListener { e ->
+                    Log.e(TAG, "❌ requestActivityTransitionUpdates FAILED: ${e.message}")
+                }
+
+        } catch (e: Exception) {
+            Log.e(TAG, "requestTransitions error", e)
+        }
     }
-  }
 
-  override fun onBind(intent: Intent?): IBinder? = null
+    private fun stopAllUpdates() {
+        try {
+            client.removeActivityUpdates(pendingIntent(100))
+            client.removeActivityTransitionUpdates(pendingIntent(101))
+
+            getSharedPreferences("activity_recognition", MODE_PRIVATE)
+                .edit()
+                .putBoolean("enabled", false)
+                .apply()
+
+            Log.i(TAG, "✅ Updates removed")
+
+        } catch (e: Exception) {
+            Log.e(TAG, "stopAllUpdates error", e)
+        }
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
 }
