@@ -15,6 +15,23 @@ class AccelerometerActivityDetector(
 
     companion object {
         private const val TAG = "AccelDetector"
+        
+        // ✅ Constants - Easy to modify
+        private const val HISTORY_SIZE = 100
+        private const val ANALYZE_INTERVAL_MS = 2000L  // 2 seconds (battery save)
+        private const val EMIT_INTERVAL_MS = 3000L    // 3 seconds
+        
+        // Activity thresholds
+        private const val STILL_AVG_MAX = 0.3f
+        private const val STILL_VAR_MAX = 0.02f
+        private const val WALKING_AVG_MIN = 0.5f
+        private const val WALKING_PEAKS_MIN = 5
+        private const val RUNNING_AVG_MIN = 3.5f
+        private const val RUNNING_PEAKS_MIN = 12
+        private const val VEHICLE_AVG_MIN = 0.15f
+        private const val VEHICLE_AVG_MAX = 1.2f
+        private const val VEHICLE_VAR_MIN = 0.02f
+        private const val VEHICLE_VAR_MAX = 0.8f
     }
 
     private var sensorManager: SensorManager? = null
@@ -26,6 +43,7 @@ class AccelerometerActivityDetector(
     private var lastEmitTime = 0L
     private var lastAnalyzeTime = 0L
     private var gravity = floatArrayOf(0f, 0f, 0f)
+    private var vehiclePatternCount = 0
 
     fun start() {
         if (isListening) {
@@ -37,20 +55,22 @@ class AccelerometerActivityDetector(
         accelerometer = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
 
         if (accelerometer == null) {
-            Log.e(TAG, "❌ No accelerometer sensor found!")
+            Log.e(TAG, "❌ No accelerometer sensor!")
             return
         }
 
+        // ✅ SENSOR_DELAY_NORMAL for battery efficiency
         sensorManager?.registerListener(
             this,
             accelerometer,
-            SensorManager.SENSOR_DELAY_GAME
+            SensorManager.SENSOR_DELAY_NORMAL
         )
 
         isListening = true
         lastEmitTime = System.currentTimeMillis()
         lastAnalyzeTime = System.currentTimeMillis()
-        Log.i(TAG, "✅ Accelerometer started")
+        vehiclePatternCount = 0
+        Log.i(TAG, "✅ Accelerometer started (NORMAL delay)")
     }
 
     fun stop() {
@@ -59,7 +79,8 @@ class AccelerometerActivityDetector(
         sensorManager?.unregisterListener(this)
         isListening = false
         magnitudeHistory.clear()
-        Log.i(TAG, "Accelerometer stopped")
+        vehiclePatternCount = 0
+        Log.i(TAG, "✅ Accelerometer stopped")
     }
 
     fun isRunning(): Boolean = isListening
@@ -67,13 +88,13 @@ class AccelerometerActivityDetector(
     override fun onSensorChanged(event: SensorEvent?) {
         if (event?.sensor?.type != Sensor.TYPE_ACCELEROMETER) return
 
-        // Low-pass filter to remove gravity
+        // Low-pass filter for gravity
         val alpha = 0.8f
         gravity[0] = alpha * gravity[0] + (1 - alpha) * event.values[0]
         gravity[1] = alpha * gravity[1] + (1 - alpha) * event.values[1]
         gravity[2] = alpha * gravity[2] + (1 - alpha) * event.values[2]
 
-        // Linear acceleration (without gravity)
+        // Linear acceleration
         val x = event.values[0] - gravity[0]
         val y = event.values[1] - gravity[1]
         val z = event.values[2] - gravity[2]
@@ -81,77 +102,97 @@ class AccelerometerActivityDetector(
         val magnitude = sqrt(x * x + y * y + z * z)
         magnitudeHistory.add(magnitude)
 
-        // Keep last 100 readings (~2 seconds)
-        if (magnitudeHistory.size > 100) {
+        // Keep limited history
+        if (magnitudeHistory.size > HISTORY_SIZE) {
             magnitudeHistory.removeAt(0)
         }
 
-        // Analyze every 1 second
+        // Analyze at interval
         val currentTime = System.currentTimeMillis()
-        if (currentTime - lastAnalyzeTime < 1000) return
+        if (currentTime - lastAnalyzeTime < ANALYZE_INTERVAL_MS) return
         lastAnalyzeTime = currentTime
 
-        if (magnitudeHistory.size < 50) return
+        if (magnitudeHistory.size < 30) return
 
         analyzeAndEmit()
     }
 
     private fun analyzeAndEmit() {
         val avg = magnitudeHistory.average().toFloat()
-        val max = magnitudeHistory.maxOrNull() ?: 0f
-        val min = magnitudeHistory.minOrNull() ?: 0f
-        val range = max - min
+        val variance = magnitudeHistory.map { (it - avg) * (it - avg) }.average().toFloat()
 
-        // Count peaks (steps)
+        // Count peaks
         var peaks = 0
         for (i in 1 until magnitudeHistory.size - 1) {
             if (magnitudeHistory[i] > magnitudeHistory[i - 1] &&
                 magnitudeHistory[i] > magnitudeHistory[i + 1] &&
-                magnitudeHistory[i] > 1.0f
+                magnitudeHistory[i] > 0.8f
             ) {
                 peaks++
             }
         }
 
-        Log.d(TAG, "avg=${"%.2f".format(avg)} max=${"%.2f".format(max)} range=${"%.2f".format(range)} peaks=$peaks")
+        // Vehicle pattern check
+        val isVehiclePattern = avg in VEHICLE_AVG_MIN..VEHICLE_AVG_MAX &&
+                               variance in VEHICLE_VAR_MIN..VEHICLE_VAR_MAX &&
+                               peaks < 8
 
+        // Determine activity
         val (activity, confidence) = when {
-            // Still: very low movement
-            avg < 0.3f && range < 0.5f -> "still" to 95
+            // STILL
+            avg < STILL_AVG_MAX && variance < STILL_VAR_MAX -> {
+                vehiclePatternCount = 0
+                "still" to 95
+            }
 
-            // Running: high acceleration, many peaks
-            avg > 4.0f || (peaks > 15 && avg > 2.0f) -> "running" to 85
+            // RUNNING
+            avg > RUNNING_AVG_MIN || peaks > RUNNING_PEAKS_MIN -> {
+                vehiclePatternCount = 0
+                "running" to 88
+            }
 
-            // Walking: moderate acceleration, regular peaks
-            avg > 0.8f && peaks > 5 -> "walking" to 90
+            // WALKING
+            peaks > WALKING_PEAKS_MIN && avg > WALKING_AVG_MIN -> {
+                vehiclePatternCount = 0
+                "walking" to 90
+            }
 
-            // Walking: medium movement
-            avg > 0.5f && range > 1.0f -> "walking" to 75
+            // IN_VEHICLE
+            isVehiclePattern -> {
+                vehiclePatternCount++
+                if (vehiclePatternCount >= 3) {
+                    "in_vehicle" to 85
+                } else {
+                    lastActivity to 60
+                }
+            }
 
-            // In vehicle: low but consistent movement (vibration)
-            avg < 0.8f && avg > 0.2f && range < 2.0f -> "in_vehicle" to 70
+            // Default WALKING
+            avg > 0.4f -> {
+                vehiclePatternCount = 0
+                "walking" to 70
+            }
 
-            // Default to still if very low
-            avg < 0.5f -> "still" to 80
-
-            // Default walking for other cases
-            else -> "walking" to 65
+            // Default STILL
+            else -> {
+                "still" to 75
+            }
         }
 
-        // Only emit if activity changed OR every 5 seconds
+        // Emit if changed or interval passed
         val currentTime = System.currentTimeMillis()
-        val timeSinceLastEmit = currentTime - lastEmitTime
-        val shouldEmit = activity != lastActivity || timeSinceLastEmit > 5000
+        val shouldEmit = activity != lastActivity || 
+                         (currentTime - lastEmitTime > EMIT_INTERVAL_MS)
 
-        if (shouldEmit) {
-            Log.i(TAG, "🏃 Activity: $lastActivity → $activity ($confidence%)")
+        if (shouldEmit && activity.isNotEmpty()) {
+            if (activity != lastActivity) {
+                Log.i(TAG, "🏃 $lastActivity → $activity ($confidence%)")
+            }
             lastActivity = activity
             lastEmitTime = currentTime
             onActivityDetected(activity, confidence)
         }
     }
 
-    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
-        Log.d(TAG, "Accuracy changed: $accuracy")
-    }
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 }

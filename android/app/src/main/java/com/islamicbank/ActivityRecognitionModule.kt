@@ -10,15 +10,44 @@ import com.facebook.react.bridge.*
 import com.facebook.react.modules.core.DeviceEventManagerModule
 
 class ActivityRecognitionModule(private val ctx: ReactApplicationContext) :
-    ReactContextBaseJavaModule(ctx) {
+    ReactContextBaseJavaModule(ctx), LifecycleEventListener {
 
     companion object {
         private const val TAG = "ARModule"
     }
 
     private var accelDetector: AccelerometerActivityDetector? = null
+    private var wasRunningBeforeBackground = false
+
+    init {
+        ctx.addLifecycleEventListener(this)
+    }
 
     override fun getName(): String = "ActivityRecognitionModule"
+
+    // ✅ Lifecycle - Pause when app goes background
+    override fun onHostResume() {
+        Log.d(TAG, "onHostResume")
+        if (wasRunningBeforeBackground) {
+            startAccelerometer()
+            wasRunningBeforeBackground = false
+        }
+    }
+
+    override fun onHostPause() {
+        Log.d(TAG, "onHostPause")
+        if (accelDetector?.isRunning() == true) {
+            wasRunningBeforeBackground = true
+            accelDetector?.stop()
+            Log.i(TAG, "⏸️ Accelerometer paused (app background)")
+        }
+    }
+
+    override fun onHostDestroy() {
+        Log.d(TAG, "onHostDestroy")
+        accelDetector?.stop()
+        accelDetector = null
+    }
 
     private fun hasPermission(): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return true
@@ -29,14 +58,10 @@ class ActivityRecognitionModule(private val ctx: ReactApplicationContext) :
 
     private fun emitToJS(activity: String, confidence: Int, source: String = "accelerometer") {
         try {
-            if (!ctx.hasActiveCatalystInstance()) {
-                Log.w(TAG, "No active catalyst instance")
-                return
-            }
+            if (!ctx.hasActiveCatalystInstance()) return
 
             val ts = System.currentTimeMillis()
 
-            // Save to SharedPrefs
             ctx.getSharedPreferences("activity_recognition", 0)
                 .edit()
                 .putString("state", activity)
@@ -46,7 +71,6 @@ class ActivityRecognitionModule(private val ctx: ReactApplicationContext) :
                 .putString("source", source)
                 .apply()
 
-            // Emit event
             val payload = Arguments.createMap().apply {
                 putString("state", activity)
                 putInt("confidence", confidence)
@@ -57,7 +81,7 @@ class ActivityRecognitionModule(private val ctx: ReactApplicationContext) :
             ctx.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
                 .emit("ActivityRecognition", payload)
 
-            Log.i(TAG, "📡 Emitted: $activity $confidence% ($source)")
+            Log.d(TAG, "📡 $activity $confidence%")
 
         } catch (e: Exception) {
             Log.e(TAG, "emitToJS error: ${e.message}")
@@ -66,23 +90,21 @@ class ActivityRecognitionModule(private val ctx: ReactApplicationContext) :
 
     @ReactMethod
     fun start(intervalMs: Int, promise: Promise) {
-        Log.d(TAG, "start() intervalMs=$intervalMs")
+        Log.d(TAG, "start($intervalMs)")
 
         try {
-            // 1. Start Google AR Service (background)
+            // Google AR Service
             if (hasPermission()) {
                 val intent = Intent(ctx, ActivityRecognitionService::class.java).apply {
                     action = ActivityRecognitionService.ACTION_START
                     putExtra(ActivityRecognitionService.EXTRA_INTERVAL_MS, intervalMs)
                 }
                 ContextCompat.startForegroundService(ctx, intent)
-                Log.i(TAG, "✅ Google AR Service started")
             }
 
-            // 2. Start Accelerometer (main detection)
+            // Accelerometer
             startAccelerometer()
 
-            // 3. Save state
             ctx.getSharedPreferences("activity_recognition", 0)
                 .edit()
                 .putBoolean("enabled", true)
@@ -90,27 +112,20 @@ class ActivityRecognitionModule(private val ctx: ReactApplicationContext) :
                 .putLong("startedAt", System.currentTimeMillis())
                 .apply()
 
-            Log.i(TAG, "✅ start() complete")
             promise.resolve(true)
 
         } catch (e: Exception) {
-            Log.e(TAG, "start() failed", e)
+            Log.e(TAG, "start failed", e)
             promise.reject("START_FAILED", e.message)
         }
     }
 
     private fun startAccelerometer() {
-        if (accelDetector != null) {
-            Log.d(TAG, "Accelerometer already running")
-            return
-        }
-
-        Log.i(TAG, "🚀 Starting Accelerometer detector...")
+        if (accelDetector?.isRunning() == true) return
 
         accelDetector = AccelerometerActivityDetector(ctx) { activity, confidence ->
-            emitToJS(activity, confidence, "accelerometer")
+            emitToJS(activity, confidence)
         }
-
         accelDetector?.start()
     }
 
@@ -128,18 +143,16 @@ class ActivityRecognitionModule(private val ctx: ReactApplicationContext) :
             // Stop Accelerometer
             accelDetector?.stop()
             accelDetector = null
+            wasRunningBeforeBackground = false
 
-            // Clear state
             ctx.getSharedPreferences("activity_recognition", 0)
                 .edit()
                 .putBoolean("enabled", false)
                 .apply()
 
-            Log.i(TAG, "✅ stop() complete")
             promise.resolve(true)
 
         } catch (e: Exception) {
-            Log.e(TAG, "stop() failed", e)
             promise.reject("STOP_FAILED", e.message)
         }
     }
@@ -154,65 +167,19 @@ class ActivityRecognitionModule(private val ctx: ReactApplicationContext) :
                 putInt("confidence", prefs.getInt("confidence", 0))
                 putDouble("timestamp", prefs.getLong("timestamp", 0L).toDouble())
                 putBoolean("enabled", prefs.getBoolean("enabled", false))
-                putInt("intervalMs", prefs.getInt("intervalMs", 5000))
-                putDouble("startedAt", prefs.getLong("startedAt", 0L).toDouble())
                 putString("source", prefs.getString("source", "unknown"))
             }
 
-            Log.d(TAG, "getLast: state=${prefs.getString("state", "unknown")}")
             promise.resolve(map)
 
         } catch (e: Exception) {
-            Log.e(TAG, "getLast() failed", e)
             promise.reject("GET_FAILED", e.message)
         }
     }
 
     @ReactMethod
-    fun simulateActivity(state: String, confidence: Int, promise: Promise) {
-        Log.d(TAG, "simulateActivity: $state $confidence%")
-
-        try {
-            emitToJS(state, confidence, "simulated")
-            Log.i(TAG, "✅ Simulated: $state $confidence%")
-            promise.resolve(true)
-
-        } catch (e: Exception) {
-            Log.e(TAG, "simulateActivity error", e)
-            promise.reject("ERROR", e.message)
-        }
-    }
+    fun addListener(eventName: String) {}
 
     @ReactMethod
-    fun getDebugInfo(promise: Promise) {
-        try {
-            val prefs = ctx.getSharedPreferences("activity_recognition", 0)
-
-            val map = Arguments.createMap().apply {
-                putString("state", prefs.getString("state", "unknown"))
-                putInt("confidence", prefs.getInt("confidence", 0))
-                putBoolean("enabled", prefs.getBoolean("enabled", false))
-                putString("source", prefs.getString("source", "unknown"))
-                putBoolean("hasPermission", hasPermission())
-                putInt("androidVersion", Build.VERSION.SDK_INT)
-                putString("device", "${Build.MANUFACTURER} ${Build.MODEL}")
-                putBoolean("accelRunning", accelDetector?.isRunning() == true)
-            }
-
-            promise.resolve(map)
-
-        } catch (e: Exception) {
-            promise.reject("ERROR", e.message)
-        }
-    }
-
-    @ReactMethod
-    fun addListener(eventName: String) {
-        Log.d(TAG, "addListener: $eventName")
-    }
-
-    @ReactMethod
-    fun removeListeners(count: Int) {
-        Log.d(TAG, "removeListeners: $count")
-    }
+    fun removeListeners(count: Int) {}
 }
