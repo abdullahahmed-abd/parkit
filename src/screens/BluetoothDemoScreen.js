@@ -1,4 +1,4 @@
-import React, {useEffect, useRef, useState} from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import {
   SafeAreaView,
   StyleSheet,
@@ -21,18 +21,36 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import BluetoothService from '../services/BluetoothService';
 
-const {BluetoothModule, ActivityRecognitionModule} = NativeModules;
+const { BluetoothModule, ActivityRecognitionModule } = NativeModules;
 
-/** ======================
- *  DEBUG LOGGER
- *  ====================== */
-const DEBUG = true;
-const ts = () => new Date().toISOString();
-const log = (...args) => DEBUG && console.log(`[ParkIt][${ts()}]`, ...args);
-const warn = (...args) => DEBUG && console.warn(`[ParkIt][${ts()}]`, ...args);
-const err = (...args) => DEBUG && console.error(`[ParkIt][${ts()}]`, ...args);
+// ═══════════════════════════════════════════════════════════
+// CONSTANTS & UTILITIES
+// ═══════════════════════════════════════════════════════════
 
-const toNum = v => {
+const DEBUG = __DEV__;
+const STORAGE_KEYS = {
+  SELECTED_DEVICE: 'selectedDevice',
+  HISTORY: 'history',
+  PARKED_LOC: 'parkedLoc',
+  DRIVING_LOC: 'drivingLoc',
+  PARKING_STATUS: 'parkingStatus',
+};
+
+const MAX_HISTORY_ITEMS = 30;
+const AR_POLL_INTERVAL = 10000;
+const AR_DETECTION_DELAY = 3000;
+
+// Logger
+const createLogger = (prefix) => ({
+  log: (...args) => DEBUG && console.log(`[${prefix}][${new Date().toISOString()}]`, ...args),
+  warn: (...args) => DEBUG && console.warn(`[${prefix}][${new Date().toISOString()}]`, ...args),
+  error: (...args) => console.error(`[${prefix}][${new Date().toISOString()}]`, ...args),
+});
+
+const logger = createLogger('ParkIt');
+
+// Utility functions
+const toNum = (v) => {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 };
@@ -43,15 +61,19 @@ const isValidLatLng = (lat, lng) =>
   Math.abs(lat) <= 90 &&
   Math.abs(lng) <= 180;
 
-const formatLatLng6 = loc => {
+const formatLatLng = (loc, decimals = 6) => {
   const lat = toNum(loc?.latitude);
   const lng = toNum(loc?.longitude);
   if (!isValidLatLng(lat, lng)) return 'N/A';
-  return `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+  return `${lat.toFixed(decimals)}, ${lng.toFixed(decimals)}`;
 };
 
-// Haversine distance in meters
-const distanceMeters = (a, b) => {
+const formatCoordinate = (value, decimals = 6) => {
+  const num = toNum(value);
+  return num !== null ? num.toFixed(decimals) : 'N/A';
+};
+
+const calculateDistance = (a, b) => {
   const lat1 = toNum(a?.latitude);
   const lon1 = toNum(a?.longitude);
   const lat2 = toNum(b?.latitude);
@@ -60,135 +82,50 @@ const distanceMeters = (a, b) => {
   if (!isValidLatLng(lat1, lon1) || !isValidLatLng(lat2, lon2)) return null;
 
   const R = 6371000;
-  const toRad = x => (x * Math.PI) / 180;
+  const toRad = (x) => (x * Math.PI) / 180;
   const dLat = toRad(lat2 - lat1);
   const dLon = toRad(lon2 - lon1);
   const s1 = Math.sin(dLat / 2) ** 2;
-  const s2 =
-    Math.cos(toRad(lat1)) *
-    Math.cos(toRad(lat2)) *
-    Math.sin(dLon / 2) ** 2;
+  const s2 = Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
   const c = 2 * Math.atan2(Math.sqrt(s1 + s2), Math.sqrt(1 - (s1 + s2)));
   return R * c;
 };
 
-const niceActivityLabel = s => {
-  switch (s) {
-    case 'still':
-      return 'STILL';
-    case 'walking':
-      return 'WALKING';
-    case 'running':
-      return 'RUNNING';
-    case 'in_vehicle':
-      return 'IN VEHICLE';
-    case 'on_bicycle':
-      return 'BICYCLE';
-    default:
-      return (s || 'UNKNOWN').toUpperCase();
-  }
+const formatDistance = (meters) => {
+  if (!Number.isFinite(meters)) return 'N/A';
+  if (meters < 1000) return `${Math.round(meters)} m`;
+  return `${(meters / 1000).toFixed(2)} km`;
 };
 
-const activityIcon = s => {
-  switch (s) {
-    case 'still':
-      return '🧍';
-    case 'walking':
-      return '🚶';
-    case 'running':
-      return '🏃';
-    case 'in_vehicle':
-      return '🚗';
-    case 'on_bicycle':
-      return '🚲';
-    default:
-      return '❓';
-  }
+const ACTIVITY_CONFIG = {
+  still: { label: 'STILL', icon: '🧍', color: '#37474F' },
+  walking: { label: 'WALKING', icon: '🚶', color: '#2E7D32' },
+  running: { label: 'RUNNING', icon: '🏃', color: '#E65100' },
+  in_vehicle: { label: 'IN VEHICLE', icon: '🚗', color: '#1565C0' },
+  on_bicycle: { label: 'BICYCLE', icon: '🚲', color: '#6A1B9A' },
+  unknown: { label: 'UNKNOWN', icon: '❓', color: '#455A64' },
 };
 
-const BluetoothDemoScreen = () => {
-  // UI loading states
-  const [bootLoading, setBootLoading] = useState(true);
-  const [isBtSyncing, setIsBtSyncing] = useState(false);
+const getActivityConfig = (state) => ACTIVITY_CONFIG[state] || ACTIVITY_CONFIG.unknown;
 
-  // Bluetooth states
-  const [bluetoothEnabled, setBluetoothEnabled] = useState(false);
-  const [pairedDevices, setPairedDevices] = useState([]);
-  const [selectedDevice, setSelectedDevice] = useState(null);
-  const [showDeviceModal, setShowDeviceModal] = useState(false);
+// ═══════════════════════════════════════════════════════════
+// CUSTOM HOOKS
+// ═══════════════════════════════════════════════════════════
 
-  // Connection states
-  const [isConnected, setIsConnected] = useState(false);
-  const [connectedDevice, setConnectedDevice] = useState(null);
-  const [connectionTime, setConnectionTime] = useState(null);
+const useLatestRef = (value) => {
+  const ref = useRef(value);
+  useEffect(() => {
+    ref.current = value;
+  }, [value]);
+  return ref;
+};
 
-  // Location states
-  const [isGettingLocation, setIsGettingLocation] = useState(false);
-  const [locationStatus, setLocationStatus] = useState('Ready');
-  const [drivingLocation, setDrivingLocation] = useState(null);
-  const [parkedLocation, setParkedLocation] = useState(null);
-
-  // History
-  const [connectionHistory, setConnectionHistory] = useState([]);
-
-  // Activity Recognition states
-  const [arPermission, setArPermission] = useState(false);
-  const [arEnabled, setArEnabled] = useState(false);
-  const [arState, setArState] = useState('unknown');
-  const [arConfidence, setArConfidence] = useState(0);
-  const [arUpdatedAt, setArUpdatedAt] = useState(0);
-
-  const arSubRef = useRef(null);
-  const arPollRef = useRef(null);
-
-  // Animation
+const usePulseAnimation = (isActive) => {
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
-  // Refs to avoid stale state issues
-  const selectedDeviceRef = useRef(null);
-  const connectedDeviceRef = useRef(null);
-  const drivingLocationRef = useRef(null);
-  const lastConnectedRef = useRef({address: null, name: null});
-
-  useEffect(() => {
-    selectedDeviceRef.current = selectedDevice;
-  }, [selectedDevice]);
-
-  useEffect(() => {
-    connectedDeviceRef.current = connectedDevice;
-  }, [connectedDevice]);
-
-  useEffect(() => {
-    drivingLocationRef.current = drivingLocation;
-  }, [drivingLocation]);
-
-  // ─── Mount ────────────────────────────────────────────────
-  useEffect(() => {
-    log('Screen mounted');
-    log('BluetoothModule exists?', !!BluetoothModule);
-    log('ActivityRecognitionModule exists?', !!ActivityRecognitionModule);
-
-    init();
-
-    return () => {
-      BluetoothService.stopListening();
-
-      if (arSubRef.current) {
-        arSubRef.current.remove();
-        arSubRef.current = null;
-      }
-
-      if (arPollRef.current) {
-        clearInterval(arPollRef.current);
-        arPollRef.current = null;
-      }
-    };
-  }, []);
-
-  // ─── Pulse animation ──────────────────────────────────────
   useEffect(() => {
     let animation;
-    if (isConnected) {
+    if (isActive) {
       animation = Animated.loop(
         Animated.sequence([
           Animated.timing(pulseAnim, {
@@ -201,152 +138,494 @@ const BluetoothDemoScreen = () => {
             duration: 1000,
             useNativeDriver: true,
           }),
-        ]),
+        ])
       );
       animation.start();
     } else {
       pulseAnim.setValue(1);
     }
-    return () => animation && animation.stop();
-  }, [isConnected, pulseAnim]);
+    return () => animation?.stop();
+  }, [isActive, pulseAnim]);
 
-  // ─── INIT ─────────────────────────────────────────────────
-  const init = async () => {
+  return pulseAnim;
+};
+
+const useAsyncStorage = () => {
+  const save = useCallback(async (key, value) => {
     try {
-      await requestLocationPermission();
-      await loadSavedData();
-      await startBluetoothListening();
-      await initActivityRecognition();
+      await AsyncStorage.setItem(key, JSON.stringify(value));
     } catch (e) {
-      err('init error =>', e);
-    } finally {
-      setBootLoading(false);
+      logger.error('Storage save error:', key, e);
     }
-  };
+  }, []);
 
-  // ─── ACTIVITY RECOGNITION ─────────────────────────────────
-  const requestArPermission = async () => {
+  const load = useCallback(async (key) => {
+    try {
+      const data = await AsyncStorage.getItem(key);
+      return data ? JSON.parse(data) : null;
+    } catch (e) {
+      logger.error('Storage load error:', key, e);
+      return null;
+    }
+  }, []);
+
+  const remove = useCallback(async (keys) => {
+    try {
+      await AsyncStorage.multiRemove(Array.isArray(keys) ? keys : [keys]);
+    } catch (e) {
+      logger.error('Storage remove error:', keys, e);
+    }
+  }, []);
+
+  return { save, load, remove };
+};
+
+// ═══════════════════════════════════════════════════════════
+// MAIN COMPONENT
+// ═══════════════════════════════════════════════════════════
+
+const BluetoothDemoScreen = () => {
+  // ─── State ────────────────────────────────────────────────
+  const [bootLoading, setBootLoading] = useState(true);
+  const [isBtSyncing, setIsBtSyncing] = useState(false);
+  const [bluetoothEnabled, setBluetoothEnabled] = useState(false);
+  const [pairedDevices, setPairedDevices] = useState([]);
+  const [selectedDevice, setSelectedDevice] = useState(null);
+  const [showDeviceModal, setShowDeviceModal] = useState(false);
+  const [isConnected, setIsConnected] = useState(false);
+  const [connectedDevice, setConnectedDevice] = useState(null);
+  const [connectionTime, setConnectionTime] = useState(null);
+  const [isGettingLocation, setIsGettingLocation] = useState(false);
+  const [locationStatus, setLocationStatus] = useState('Ready');
+  const [drivingLocation, setDrivingLocation] = useState(null);
+  const [parkedLocation, setParkedLocation] = useState(null);
+  const [connectionHistory, setConnectionHistory] = useState([]);
+
+  // Manual Parking State
+  const [isParked, setIsParked] = useState(false);
+  const [parkTime, setParkTime] = useState(null);
+  const [unparkTime, setUnparkTime] = useState(null);
+  const [unparkLocation, setUnparkLocation] = useState(null);
+
+  // Activity Recognition State
+  const [arState, setArState] = useState({
+    permission: false,
+    enabled: false,
+    activity: 'unknown',
+    confidence: 0,
+    updatedAt: 0,
+  });
+
+  // ─── Refs ─────────────────────────────────────────────────
+  const mountedRef = useRef(true);
+  const arSubRef = useRef(null);
+  const arPollRef = useRef(null);
+  const lastConnectedRef = useRef({ address: null, name: null });
+
+  const selectedDeviceRef = useLatestRef(selectedDevice);
+  const connectedDeviceRef = useLatestRef(connectedDevice);
+  const drivingLocationRef = useLatestRef(drivingLocation);
+  const arStateRef = useLatestRef(arState);
+  const parkedLocationRef = useLatestRef(parkedLocation);
+
+  // ─── Hooks ────────────────────────────────────────────────
+  const pulseAnim = usePulseAnimation(isConnected || isParked);
+  const storage = useAsyncStorage();
+
+  // ─── Derived Values ───────────────────────────────────────
+  const lastDistance = useMemo(() => {
+    if (!parkedLocation || !unparkLocation) return null;
+    return calculateDistance(parkedLocation, unparkLocation);
+  }, [parkedLocation, unparkLocation]);
+
+  const activityConfig = useMemo(
+    () => getActivityConfig(arState.activity),
+    [arState.activity]
+  );
+
+  const arBadgeText = useMemo(() => {
+    if (!ActivityRecognitionModule) return 'AR N/A';
+    if (!arState.enabled) return 'AR OFF';
+    return `${activityConfig.icon} ${activityConfig.label}`;
+  }, [arState.enabled, activityConfig]);
+
+  // ═══════════════════════════════════════════════════════════
+  // LOCATION SERVICES
+  // ═══════════════════════════════════════════════════════════
+
+  const getIPLocation = useCallback(async () => {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      
+      const response = await fetch('http://ip-api.com/json/', {
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      
+      const data = await response.json();
+      if (data?.status === 'success') {
+        return {
+          latitude: data.lat,
+          longitude: data.lon,
+          city: data.city || 'Unknown',
+          source: 'IP (Approximate)',
+          accuracy: 5000,
+          time: Date.now(),
+        };
+      }
+    } catch (e) {
+      if (e.name !== 'AbortError') {
+        logger.error('IP location error:', e);
+      }
+    }
+    return null;
+  }, []);
+
+  const getNativeLocation = useCallback(async (fresh = false) => {
+    try {
+      if (!BluetoothModule) return null;
+
+      const locationFn = fresh
+        ? BluetoothModule.getFreshLocation
+        : BluetoothModule.getCurrentLocation;
+
+      if (!locationFn) return null;
+
+      const loc = await locationFn();
+      const lat = toNum(loc?.latitude);
+      const lng = toNum(loc?.longitude);
+
+      if (isValidLatLng(lat, lng)) {
+        return { ...loc, latitude: lat, longitude: lng };
+      }
+    } catch (e) {
+      logger.error('Native location error:', e);
+    }
+    return null;
+  }, []);
+
+  const getLocation = useCallback(
+    async ({ fresh = false } = {}) => {
+      if (!mountedRef.current) return null;
+
+      setIsGettingLocation(true);
+      setLocationStatus(fresh ? 'Getting live GPS...' : 'Getting GPS...');
+
+      try {
+        const nativeLoc = await getNativeLocation(fresh);
+        if (nativeLoc?.latitude && nativeLoc?.longitude) {
+          setLocationStatus('GPS ✅');
+          return {
+            latitude: nativeLoc.latitude,
+            longitude: nativeLoc.longitude,
+            accuracy: nativeLoc.accuracy,
+            time: nativeLoc.time || Date.now(),
+            source: 'GPS',
+          };
+        }
+
+        const ipLoc = await getIPLocation();
+        if (ipLoc) {
+          setLocationStatus(ipLoc.city || 'IP ✅');
+          return ipLoc;
+        }
+
+        setLocationStatus('Default Location');
+        return {
+          latitude: 23.2599,
+          longitude: 77.4126,
+          city: 'Bhopal',
+          source: 'Default',
+          accuracy: 99999,
+          time: Date.now(),
+        };
+      } finally {
+        if (mountedRef.current) {
+          setIsGettingLocation(false);
+        }
+      }
+    },
+    [getNativeLocation, getIPLocation]
+  );
+
+  const openMaps = useCallback((loc) => {
+    const lat = toNum(loc?.latitude);
+    const lng = toNum(loc?.longitude);
+    if (!isValidLatLng(lat, lng)) return;
+    
+    const url = `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
+    Linking.openURL(url).catch((e) => logger.error('Maps open error:', e));
+  }, []);
+
+  // ═══════════════════════════════════════════════════════════
+  // PARKING ACTIONS
+  // ═══════════════════════════════════════════════════════════
+
+  const handlePark = useCallback(async () => {
+    try {
+      setIsGettingLocation(true);
+      const loc = await getLocation({ fresh: true });
+      
+      if (!loc || !mountedRef.current) {
+        Alert.alert('Error', 'Could not get your current location. Please try again.');
+        return;
+      }
+
+      const now = new Date();
+      const parkData = {
+        ...loc,
+        parkedAt: now.toISOString(),
+      };
+
+      setParkedLocation(parkData);
+      setIsParked(true);
+      setParkTime(now.toLocaleTimeString());
+      setUnparkLocation(null);
+      setUnparkTime(null);
+
+      await storage.save(STORAGE_KEYS.PARKED_LOC, parkData);
+      await storage.save(STORAGE_KEYS.PARKING_STATUS, { isParked: true, parkTime: now.toISOString() });
+
+      // Add to history
+      const entry = {
+        type: 'park',
+        time: now.toLocaleTimeString(),
+        date: now.toLocaleDateString(),
+        location: parkData,
+        activity: arStateRef.current.activity,
+      };
+
+      setConnectionHistory((prev) => {
+        const newHistory = [entry, ...prev.slice(0, MAX_HISTORY_ITEMS - 1)];
+        storage.save(STORAGE_KEYS.HISTORY, newHistory);
+        return newHistory;
+      });
+
+      Alert.alert(
+        '🅿️ Vehicle Parked',
+        `Your parking location has been saved!\n\nLatitude: ${formatCoordinate(loc.latitude)}\nLongitude: ${formatCoordinate(loc.longitude)}\nTime: ${now.toLocaleTimeString()}\nSource: ${loc.source || 'GPS'}`,
+        [
+          { text: 'OK' },
+          { text: 'View on Map', onPress: () => openMaps(loc) },
+        ]
+      );
+
+    } catch (e) {
+      logger.error('Park error:', e);
+      Alert.alert('Error', 'Failed to save parking location. Please try again.');
+    } finally {
+      setIsGettingLocation(false);
+    }
+  }, [getLocation, storage, arStateRef, openMaps]);
+
+  const handleUnpark = useCallback(async () => {
+    if (!isParked || !parkedLocationRef.current) {
+      Alert.alert('Notice', 'No parking location found. Please park your vehicle first.');
+      return;
+    }
+
+    try {
+      setIsGettingLocation(true);
+      const loc = await getLocation({ fresh: true });
+      
+      if (!loc || !mountedRef.current) {
+        Alert.alert('Error', 'Could not get your current location. Please try again.');
+        return;
+      }
+
+      const now = new Date();
+      const parkedLoc = parkedLocationRef.current;
+      const distance = calculateDistance(parkedLoc, loc);
+
+      setUnparkLocation(loc);
+      setUnparkTime(now.toLocaleTimeString());
+      setIsParked(false);
+
+      await storage.save(STORAGE_KEYS.PARKING_STATUS, { isParked: false, unparkTime: now.toISOString() });
+
+      // Add to history
+      const entry = {
+        type: 'unpark',
+        time: now.toLocaleTimeString(),
+        date: now.toLocaleDateString(),
+        location: loc,
+        parkLocation: parkedLoc,
+        distanceMeters: distance,
+        activity: arStateRef.current.activity,
+      };
+
+      setConnectionHistory((prev) => {
+        const newHistory = [entry, ...prev.slice(0, MAX_HISTORY_ITEMS - 1)];
+        storage.save(STORAGE_KEYS.HISTORY, newHistory);
+        return newHistory;
+      });
+
+      Alert.alert(
+        '🚗 Vehicle Unparked',
+        `Unpark location recorded!\n\nLatitude: ${formatCoordinate(loc.latitude)}\nLongitude: ${formatCoordinate(loc.longitude)}\nTime: ${now.toLocaleTimeString()}\n\n📍 Parked Location:\nLat: ${formatCoordinate(parkedLoc.latitude)}\nLng: ${formatCoordinate(parkedLoc.longitude)}\n\n📏 Distance: ${formatDistance(distance)}`,
+        [
+          { text: 'OK' },
+          { text: 'View Parked Location', onPress: () => openMaps(parkedLoc) },
+        ]
+      );
+
+    } catch (e) {
+      logger.error('Unpark error:', e);
+      Alert.alert('Error', 'Failed to record unpark location. Please try again.');
+    } finally {
+      setIsGettingLocation(false);
+    }
+  }, [isParked, parkedLocationRef, getLocation, storage, arStateRef, openMaps]);
+
+  // ═══════════════════════════════════════════════════════════
+  // PERMISSIONS
+  // ═══════════════════════════════════════════════════════════
+
+  const requestLocationPermission = useCallback(async () => {
+    if (Platform.OS !== 'android') return true;
+
+    try {
+      const granted = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+        {
+          title: 'Location Permission Required',
+          message: 'ParkIt needs access to your location to save your parking spot accurately.',
+          buttonPositive: 'Allow',
+          buttonNegative: 'Deny',
+        }
+      );
+
+      const ok = granted === PermissionsAndroid.RESULTS.GRANTED;
+      setLocationStatus(ok ? 'Permission Granted ✅' : 'Permission Denied ❌');
+      return ok;
+    } catch (e) {
+      logger.error('Location permission error:', e);
+      setLocationStatus('Permission Error');
+      return false;
+    }
+  }, []);
+
+  const requestArPermission = useCallback(async () => {
     if (Platform.OS !== 'android') {
-      setArPermission(true);
+      setArState((prev) => ({ ...prev, permission: true }));
       return true;
     }
 
     try {
-      log('Requesting ACTIVITY_RECOGNITION permission...');
+      logger.log('Requesting ACTIVITY_RECOGNITION permission...');
 
-      const ar = await PermissionsAndroid.request(
+      const result = await PermissionsAndroid.request(
         PermissionsAndroid.PERMISSIONS.ACTIVITY_RECOGNITION,
         {
-          title: 'Activity Permission',
-          message: 'App needs activity recognition to detect still / walk / run / vehicle.',
+          title: 'Activity Recognition Permission',
+          message: 'This app needs activity recognition to detect your movement state (walking, driving, etc.).',
           buttonPositive: 'Allow',
           buttonNegative: 'Deny',
-        },
+        }
       );
 
-      log('ACTIVITY_RECOGNITION result:', ar);
-
       if (Platform.Version >= 33) {
-        log('Requesting POST_NOTIFICATIONS (Android 13+)');
         await PermissionsAndroid.request(
-          PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
+          PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS
         );
       }
 
-      const ok = ar === PermissionsAndroid.RESULTS.GRANTED;
-      setArPermission(ok);
+      const ok = result === PermissionsAndroid.RESULTS.GRANTED;
+      setArState((prev) => ({ ...prev, permission: ok }));
       return ok;
     } catch (e) {
-      err('requestArPermission error =>', e);
-      setArPermission(false);
+      logger.error('AR permission error:', e);
+      setArState((prev) => ({ ...prev, permission: false }));
       return false;
     }
-  };
+  }, []);
 
-  const readLastAr = async () => {
+  // ═══════════════════════════════════════════════════════════
+  // ACTIVITY RECOGNITION
+  // ═══════════════════════════════════════════════════════════
+
+  const readLastAr = useCallback(async () => {
+    if (!ActivityRecognitionModule?.getLast || !mountedRef.current) return;
+
     try {
-      if (!ActivityRecognitionModule?.getLast) {
-        warn('getLast() not available');
-        return;
-      }
-
       const last = await ActivityRecognitionModule.getLast();
-      log('📖 getLast() =>', JSON.stringify(last));
+      logger.log('AR getLast:', last);
 
-      if (last) {
-        setArState(last.state || 'unknown');
-        setArConfidence(Number(last.confidence ?? 0));
-        setArUpdatedAt(Number(last.timestamp ?? 0));
-        setArEnabled(Boolean(last.enabled));
+      if (last && mountedRef.current) {
+        setArState((prev) => ({
+          ...prev,
+          activity: last.state || 'unknown',
+          confidence: Number(last.confidence ?? 0),
+          updatedAt: Number(last.timestamp ?? 0),
+          enabled: Boolean(last.enabled),
+        }));
       }
     } catch (e) {
-      err('readLastAr error =>', e);
+      logger.error('Read AR error:', e);
     }
-  };
+  }, []);
 
-  const startAr = async () => {
-    try {
-      if (!ActivityRecognitionModule?.start) {
-        Alert.alert('Missing', 'ActivityRecognitionModule.start not found.');
+  const startAr = useCallback(async () => {
+    if (!ActivityRecognitionModule?.start) {
+      Alert.alert('Not Available', 'Activity Recognition module is not available on this device.');
+      return;
+    }
+
+    let permOk = arStateRef.current.permission;
+    if (!permOk) {
+      permOk = await requestArPermission();
+      if (!permOk) {
+        Alert.alert('Permission Required', 'Activity recognition permission is required for this feature.');
         return;
       }
-
-      let permOk = arPermission;
-      if (!permOk) {
-        permOk = await requestArPermission();
-        if (!permOk) {
-          Alert.alert('Permission Denied', 'Activity recognition permission not granted.');
-          return;
-        }
-      }
-
-      log('Calling ActivityRecognitionModule.start(5000)...');
-      const res = await ActivityRecognitionModule.start(5000);
-      log('start() result =>', res);
-
-      setArEnabled(true);
-      setTimeout(() => readLastAr(), 3000);
-    } catch (e) {
-      err('startAr error =>', e);
-      Alert.alert('AR Start Error', String(e?.message || e));
     }
-  };
 
-  const stopAr = async () => {
     try {
-      if (!ActivityRecognitionModule?.stop) return;
+      logger.log('Starting AR service...');
+      await ActivityRecognitionModule.start(5000);
+      setArState((prev) => ({ ...prev, enabled: true }));
+      setTimeout(readLastAr, AR_DETECTION_DELAY);
+    } catch (e) {
+      logger.error('Start AR error:', e);
+      Alert.alert('Error', `Failed to start activity recognition: ${e?.message || e}`);
+    }
+  }, [requestArPermission, readLastAr, arStateRef]);
 
-      log('Calling ActivityRecognitionModule.stop()...');
-      const res = await ActivityRecognitionModule.stop();
-      log('stop() result =>', res);
+  const stopAr = useCallback(async () => {
+    if (!ActivityRecognitionModule?.stop) return;
 
-      setArEnabled(false);
+    try {
+      logger.log('Stopping AR service...');
+      await ActivityRecognitionModule.stop();
+      setArState((prev) => ({ ...prev, enabled: false }));
       await readLastAr();
     } catch (e) {
-      err('stopAr error =>', e);
+      logger.error('Stop AR error:', e);
     }
-  };
+  }, [readLastAr]);
 
-  const initActivityRecognition = async () => {
+  const initActivityRecognition = useCallback(async () => {
     if (!ActivityRecognitionModule) {
-      err('❌ ActivityRecognitionModule is NULL');
+      logger.error('ActivityRecognitionModule is NULL');
       return;
     }
 
     // Subscribe to events
     if (!arSubRef.current) {
-      log('📡 Subscribing DeviceEventEmitter: ActivityRecognition');
       arSubRef.current = DeviceEventEmitter.addListener(
         'ActivityRecognition',
-        event => {
-          log('🎯 AR EVENT =>', JSON.stringify(event));
-
-          if (event?.state) {
-            setArState(event.state);
-            setArConfidence(Number(event.confidence ?? 0));
-            setArUpdatedAt(Number(event.timestamp ?? Date.now()));
+        (event) => {
+          logger.log('AR Event:', event);
+          if (event?.state && mountedRef.current) {
+            setArState((prev) => ({
+              ...prev,
+              activity: event.state,
+              confidence: Number(event.confidence ?? 0),
+              updatedAt: Number(event.timestamp ?? Date.now()),
+            }));
           }
-        },
+        }
       );
     }
 
@@ -354,192 +633,36 @@ const BluetoothDemoScreen = () => {
 
     const permOk = await requestArPermission();
     if (!permOk) {
-      warn('AR permission not granted');
+      logger.warn('AR permission not granted');
       return;
     }
 
     try {
-      log('Starting AR service (5000ms)...');
       await ActivityRecognitionModule.start(5000);
-      setArEnabled(true);
-      setTimeout(() => readLastAr(), 3000);
+      setArState((prev) => ({ ...prev, enabled: true }));
+      setTimeout(readLastAr, AR_DETECTION_DELAY);
     } catch (e) {
-      err('AR auto-start failed =>', e);
+      logger.error('AR auto-start failed:', e);
     }
 
-    // Polling every 10s
+    // Polling
     if (!arPollRef.current) {
-      arPollRef.current = setInterval(() => {
-        readLastAr();
-      }, 10000);
+      arPollRef.current = setInterval(readLastAr, AR_POLL_INTERVAL);
     }
-  };
+  }, [readLastAr, requestArPermission]);
 
-  // ─── PERMISSIONS ──────────────────────────────────────────
-  const requestLocationPermission = async () => {
-    if (Platform.OS !== 'android') return true;
+  // ═══════════════════════════════════════════════════════════
+  // BLUETOOTH
+  // ═══════════════════════════════════════════════════════════
 
-    try {
-      const granted = await PermissionsAndroid.request(
-        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-        {
-          title: 'Location Permission',
-          message: 'ParkIt needs location to save your parking spot',
-          buttonPositive: 'Allow',
-        },
-      );
-
-      const ok = granted === PermissionsAndroid.RESULTS.GRANTED;
-      setLocationStatus(ok ? 'Permission ✅' : 'Permission ❌');
-      return ok;
-    } catch (e) {
-      setLocationStatus('Permission error');
-      return false;
-    }
-  };
-
-  // ─── STORAGE ──────────────────────────────────────────────
-  const loadSavedData = async () => {
-    try {
-      const [d, h, parked, driving] = await Promise.all([
-        AsyncStorage.getItem('selectedDevice'),
-        AsyncStorage.getItem('history'),
-        AsyncStorage.getItem('parkedLoc'),
-        AsyncStorage.getItem('drivingLoc'),
-      ]);
-
-      if (d) setSelectedDevice(JSON.parse(d));
-      if (h) setConnectionHistory(JSON.parse(h));
-      if (parked) setParkedLocation(JSON.parse(parked));
-      if (driving) setDrivingLocation(JSON.parse(driving));
-    } catch (e) {
-      err('loadSavedData error =>', e);
-    }
-  };
-
-  const saveHistory = async newHistory => {
-    try {
-      await AsyncStorage.setItem('history', JSON.stringify(newHistory));
-    } catch (e) {}
-  };
-
-  const saveParkedLoc = async loc => {
-    try {
-      await AsyncStorage.setItem('parkedLoc', JSON.stringify(loc));
-    } catch (e) {}
-  };
-
-  const saveDrivingLoc = async loc => {
-    try {
-      await AsyncStorage.setItem('drivingLoc', JSON.stringify(loc));
-    } catch (e) {}
-  };
-
-  // ─── LOCATION ─────────────────────────────────────────────
-  const getIPLocation = async () => {
-    try {
-      const response = await fetch('http://ip-api.com/json/');
-      const data = await response.json();
-      if (data?.status === 'success') {
-        return {
-          latitude: data.lat,
-          longitude: data.lon,
-          city: data.city || 'Unknown',
-          source: 'IP (Approx)',
-          accuracy: 5000,
-          time: Date.now(),
-        };
-      }
-    } catch (e) {
-      err('getIPLocation error =>', e);
-    }
-    return null;
-  };
-
-  const getNativeLocation = async (fresh = false) => {
-    try {
-      if (!BluetoothModule) return null;
-
-      if (fresh && BluetoothModule?.getFreshLocation) {
-        const f = await BluetoothModule.getFreshLocation();
-        const lat = toNum(f?.latitude);
-        const lng = toNum(f?.longitude);
-        if (isValidLatLng(lat, lng)) {
-          return {...f, latitude: lat, longitude: lng};
-        }
-      }
-
-      if (BluetoothModule?.getCurrentLocation) {
-        const c = await BluetoothModule.getCurrentLocation();
-        const lat = toNum(c?.latitude);
-        const lng = toNum(c?.longitude);
-        if (isValidLatLng(lat, lng)) {
-          return {...c, latitude: lat, longitude: lng};
-        }
-      }
-
-      return null;
-    } catch (e) {
-      err('getNativeLocation error =>', e);
-      return null;
-    }
-  };
-
-  const getLocation = async ({fresh = false} = {}) => {
-    setIsGettingLocation(true);
-    setLocationStatus(fresh ? 'Getting LIVE GPS...' : 'Getting GPS...');
-
-    try {
-      const nativeLoc = await getNativeLocation(fresh);
-
-      if (nativeLoc?.latitude && nativeLoc?.longitude) {
-        setLocationStatus(`GPS ✅`);
-        return {
-          latitude: nativeLoc.latitude,
-          longitude: nativeLoc.longitude,
-          accuracy: nativeLoc.accuracy,
-          time: nativeLoc.time,
-          source: 'GPS',
-        };
-      }
-
-      const ipLoc = await getIPLocation();
-      if (ipLoc) {
-        setLocationStatus(ipLoc.city || 'IP ✅');
-        return ipLoc;
-      }
-
-      setLocationStatus('Default');
-      return {
-        latitude: 23.2599,
-        longitude: 77.4126,
-        city: 'Bhopal',
-        source: 'Default',
-        accuracy: 99999,
-        time: Date.now(),
-      };
-    } finally {
-      setIsGettingLocation(false);
-    }
-  };
-
-  const openMaps = loc => {
-    const lat = toNum(loc?.latitude);
-    const lng = toNum(loc?.longitude);
-    if (!isValidLatLng(lat, lng)) return;
-    const url = `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
-    Linking.openURL(url).catch(() => {});
-  };
-
-  // ─── BLUETOOTH ────────────────────────────────────────────
-  const shouldHandleEventForSelected = device => {
+  const shouldHandleEvent = useCallback((device) => {
     const selected = selectedDeviceRef.current;
     if (!selected) return true;
     if (device?.address) return device.address === selected.address;
     return lastConnectedRef.current?.address === selected.address;
-  };
+  }, [selectedDeviceRef]);
 
-  const getNiceDeviceName = device => {
+  const getDeviceName = useCallback((device) => {
     const nameFromEvent = device?.name || device?.namme;
     if (nameFromEvent && nameFromEvent !== 'Unknown Device') return nameFromEvent;
     return (
@@ -548,9 +671,87 @@ const BluetoothDemoScreen = () => {
       selectedDeviceRef.current?.name ||
       'Unknown Device'
     );
-  };
+  }, [connectedDeviceRef, selectedDeviceRef]);
 
-  const startBluetoothListening = async () => {
+  const onDeviceConnect = useCallback(
+    async (device) => {
+      logger.log('Device connected:', device);
+
+      if (!shouldHandleEvent(device) || !mountedRef.current) return;
+
+      lastConnectedRef.current = {
+        address: device?.address || null,
+        name: device?.name || null,
+      };
+
+      const now = new Date();
+      const loc = await getLocation({ fresh: true });
+
+      if (!mountedRef.current) return;
+
+      setDrivingLocation(loc);
+      storage.save(STORAGE_KEYS.DRIVING_LOC, loc);
+      setIsConnected(true);
+      setConnectedDevice(device);
+      setConnectionTime(now.toLocaleTimeString());
+
+      const entry = {
+        type: 'connect',
+        device: device?.name || 'Unknown Device',
+        time: now.toLocaleTimeString(),
+        date: now.toLocaleDateString(),
+        location: loc,
+        activity: arStateRef.current.activity,
+      };
+
+      setConnectionHistory((prev) => {
+        const newHistory = [entry, ...prev.slice(0, MAX_HISTORY_ITEMS - 1)];
+        storage.save(STORAGE_KEYS.HISTORY, newHistory);
+        return newHistory;
+      });
+    },
+    [shouldHandleEvent, getLocation, storage, arStateRef]
+  );
+
+  const onDeviceDisconnect = useCallback(
+    async (device) => {
+      logger.log('Device disconnected:', device);
+
+      if (!shouldHandleEvent(device) || !mountedRef.current) return;
+
+      const now = new Date();
+      const loc = await getLocation({ fresh: true });
+
+      if (!mountedRef.current) return;
+
+      setIsConnected(false);
+      setConnectionTime(now.toLocaleTimeString());
+      setParkedLocation(loc);
+      storage.save(STORAGE_KEYS.PARKED_LOC, loc);
+
+      const startLoc = drivingLocationRef.current;
+      const dist = calculateDistance(startLoc, loc);
+
+      const entry = {
+        type: 'disconnect',
+        device: getDeviceName(device),
+        time: now.toLocaleTimeString(),
+        date: now.toLocaleDateString(),
+        location: loc,
+        distanceMeters: dist,
+        activity: arStateRef.current.activity,
+      };
+
+      setConnectionHistory((prev) => {
+        const newHistory = [entry, ...prev.slice(0, MAX_HISTORY_ITEMS - 1)];
+        storage.save(STORAGE_KEYS.HISTORY, newHistory);
+        return newHistory;
+      });
+    },
+    [shouldHandleEvent, getLocation, getDeviceName, storage, drivingLocationRef, arStateRef]
+  );
+
+  const startBluetoothListening = useCallback(async () => {
     setIsBtSyncing(true);
     try {
       const enabled = await BluetoothService.isBluetoothEnabled();
@@ -565,214 +766,197 @@ const BluetoothDemoScreen = () => {
       await BluetoothService.startListening({
         onConnect: onDeviceConnect,
         onDisconnect: onDeviceDisconnect,
-        onStateChange: s => setBluetoothEnabled(!!s.enabled),
+        onStateChange: (s) => setBluetoothEnabled(!!s.enabled),
       });
     } catch (e) {
-      err('startBluetoothListening error =>', e);
+      logger.error('Bluetooth listening error:', e);
     } finally {
-      setIsBtSyncing(false);
+      if (mountedRef.current) {
+        setIsBtSyncing(false);
+      }
     }
-  };
+  }, [onDeviceConnect, onDeviceDisconnect]);
 
-  const onDeviceConnect = async device => {
-    log('onDeviceConnect =>', device);
+  // ═══════════════════════════════════════════════════════════
+  // INITIALIZATION & CLEANUP
+  // ═══════════════════════════════════════════════════════════
 
-    if (!shouldHandleEventForSelected(device)) return;
+  const loadSavedData = useCallback(async () => {
+    const [device, history, parked, driving, parkingStatus] = await Promise.all([
+      storage.load(STORAGE_KEYS.SELECTED_DEVICE),
+      storage.load(STORAGE_KEYS.HISTORY),
+      storage.load(STORAGE_KEYS.PARKED_LOC),
+      storage.load(STORAGE_KEYS.DRIVING_LOC),
+      storage.load(STORAGE_KEYS.PARKING_STATUS),
+    ]);
 
-    lastConnectedRef.current = {
-      address: device?.address || null,
-      name: device?.name || null,
+    if (device) setSelectedDevice(device);
+    if (history) setConnectionHistory(history);
+    if (parked) setParkedLocation(parked);
+    if (driving) setDrivingLocation(driving);
+    if (parkingStatus) {
+      setIsParked(parkingStatus.isParked || false);
+      if (parkingStatus.parkTime) {
+        setParkTime(new Date(parkingStatus.parkTime).toLocaleTimeString());
+      }
+    }
+  }, [storage]);
+
+  useEffect(() => {
+    logger.log('Screen mounted');
+    mountedRef.current = true;
+
+    const init = async () => {
+      try {
+        await requestLocationPermission();
+        await loadSavedData();
+        await startBluetoothListening();
+        await initActivityRecognition();
+      } catch (e) {
+        logger.error('Init error:', e);
+      } finally {
+        if (mountedRef.current) {
+          setBootLoading(false);
+        }
+      }
     };
 
-    const now = new Date();
-    const loc = await getLocation({fresh: true});
+    init();
 
-    setDrivingLocation(loc);
-    saveDrivingLoc(loc);
-    setIsConnected(true);
-    setConnectedDevice(device);
-    setConnectionTime(now.toLocaleTimeString());
+    return () => {
+      logger.log('Screen unmounting');
+      mountedRef.current = false;
+      BluetoothService.stopListening();
 
-    const entry = {
-      type: 'connect',
-      device: device?.name || 'Unknown Device',
-      time: now.toLocaleTimeString(),
-      date: now.toLocaleDateString(),
-      location: loc,
-      activity: arState,
+      if (arSubRef.current) {
+        arSubRef.current.remove();
+        arSubRef.current = null;
+      }
+
+      if (arPollRef.current) {
+        clearInterval(arPollRef.current);
+        arPollRef.current = null;
+      }
     };
+  }, []);
 
-    setConnectionHistory(prev => {
-      const newHistory = [entry, ...prev.slice(0, 29)];
-      saveHistory(newHistory);
-      return newHistory;
-    });
-  };
+  // ═══════════════════════════════════════════════════════════
+  // UI ACTIONS
+  // ═══════════════════════════════════════════════════════════
 
-  const onDeviceDisconnect = async device => {
-    log('onDeviceDisconnect =>', device);
-
-    if (!shouldHandleEventForSelected(device)) return;
-
-    const now = new Date();
-    const loc = await getLocation({fresh: true});
-
-    setIsConnected(false);
-    setConnectionTime(now.toLocaleTimeString());
-    setParkedLocation(loc);
-    await saveParkedLoc(loc);
-
-    const startLoc = drivingLocationRef.current;
-    const dist = distanceMeters(startLoc, loc);
-
-    const entry = {
-      type: 'disconnect',
-      device: getNiceDeviceName(device),
-      time: now.toLocaleTimeString(),
-      date: now.toLocaleDateString(),
-      location: loc,
-      distanceMeters: dist,
-      activity: arState,
-    };
-
-    setConnectionHistory(prev => {
-      const newHistory = [entry, ...prev.slice(0, 29)];
-      saveHistory(newHistory);
-      return newHistory;
-    });
-  };
-
-  // ─── UI ACTIONS ───────────────────────────────────────────
-  const testLocation = async () => {
+  const testLocation = useCallback(async () => {
     try {
-      const loc = await getLocation({fresh: true});
+      const loc = await getLocation({ fresh: true });
       Alert.alert(
-        '📍 GPS Location',
-        `Lat/Lng: ${formatLatLng6(loc)}\nAccuracy: ${
-          loc.accuracy ? Math.round(loc.accuracy) + 'm' : 'N/A'
-        }\nSource: ${loc.source || 'N/A'}`,
-        [{text: 'OK'}, {text: 'Open Maps', onPress: () => openMaps(loc)}],
+        '📍 Current GPS Location',
+        `Latitude: ${formatCoordinate(loc.latitude)}\nLongitude: ${formatCoordinate(loc.longitude)}\nAccuracy: ${loc.accuracy ? Math.round(loc.accuracy) + ' meters' : 'N/A'}\nSource: ${loc.source || 'N/A'}`,
+        [
+          { text: 'OK' },
+          { text: 'Open in Maps', onPress: () => openMaps(loc) },
+        ]
       );
     } catch (e) {
-      Alert.alert('Error', 'Could not get location');
+      Alert.alert('Error', 'Could not retrieve your location. Please check GPS settings.');
     }
-  };
+  }, [getLocation, openMaps]);
 
-  const selectDevice = async device => {
-    setSelectedDevice(device);
-    setShowDeviceModal(false);
-    try {
-      await AsyncStorage.setItem('selectedDevice', JSON.stringify(device));
-    } catch (e) {}
-    Alert.alert('✅ Selected', device?.name || 'Device');
-  };
+  const selectDevice = useCallback(
+    async (device) => {
+      setSelectedDevice(device);
+      setShowDeviceModal(false);
+      await storage.save(STORAGE_KEYS.SELECTED_DEVICE, device);
+      Alert.alert('Device Selected', `${device?.name || 'Device'} has been selected for tracking.`);
+    },
+    [storage]
+  );
 
-  const clearDevice = async () => {
-    Alert.alert('Remove Device?', 'Selected device ko remove karein?', [
-      {text: 'No'},
-      {
-        text: 'Yes',
-        onPress: async () => {
-          setSelectedDevice(null);
-          setIsConnected(false);
-          try {
-            await AsyncStorage.removeItem('selectedDevice');
-          } catch (e) {}
+  const clearDevice = useCallback(() => {
+    Alert.alert(
+      'Remove Device',
+      'Are you sure you want to remove the selected device?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            setSelectedDevice(null);
+            setIsConnected(false);
+            await storage.remove(STORAGE_KEYS.SELECTED_DEVICE);
+          },
         },
-      },
-    ]);
-  };
+      ]
+    );
+  }, [storage]);
 
-  const clearHistory = () => {
-    Alert.alert('Clear All?', 'Puri history delete ho jayegi.', [
-      {text: 'No'},
-      {
-        text: 'Yes',
-        style: 'destructive',
-        onPress: async () => {
-          setConnectionHistory([]);
-          setParkedLocation(null);
-          setDrivingLocation(null);
-          try {
-            await AsyncStorage.multiRemove(['history', 'parkedLoc', 'drivingLoc']);
-          } catch (e) {}
+  const clearHistory = useCallback(() => {
+    Alert.alert(
+      'Clear History',
+      'Are you sure you want to delete all history? This action cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete All',
+          style: 'destructive',
+          onPress: async () => {
+            setConnectionHistory([]);
+            setParkedLocation(null);
+            setDrivingLocation(null);
+            setUnparkLocation(null);
+            setIsParked(false);
+            setParkTime(null);
+            setUnparkTime(null);
+            await storage.remove([
+              STORAGE_KEYS.HISTORY,
+              STORAGE_KEYS.PARKED_LOC,
+              STORAGE_KEYS.DRIVING_LOC,
+              STORAGE_KEYS.PARKING_STATUS,
+            ]);
+          },
         },
-      },
-    ]);
-  };
+      ]
+    );
+  }, [storage]);
 
-  // ─── DERIVED VALUES ───────────────────────────────────────
-  const lastDistance =
-    !isConnected && parkedLocation && drivingLocation
-      ? distanceMeters(drivingLocation, parkedLocation)
-      : null;
+  // ═══════════════════════════════════════════════════════════
+  // RENDER
+  // ═══════════════════════════════════════════════════════════
 
-  const arModuleAvailable = !!ActivityRecognitionModule;
-
-  const arBadgeText = arModuleAvailable
-    ? arEnabled
-      ? `${activityIcon(arState)} ${niceActivityLabel(arState)}`
-      : 'AR OFF'
-    : 'AR N/A';
-
-  const arCardColor = () => {
-    switch (arState) {
-      case 'in_vehicle':
-        return '#1565C0';
-      case 'walking':
-        return '#2E7D32';
-      case 'running':
-        return '#E65100';
-      case 'on_bicycle':
-        return '#6A1B9A';
-      case 'still':
-        return '#37474F';
-      default:
-        return '#455A64';
-    }
-  };
-
-  // ─── LOADING SCREEN ───────────────────────────────────────
   if (bootLoading) {
     return (
       <SafeAreaView style={styles.loading}>
         <ActivityIndicator size="large" color="#FFF" />
-        <Text style={styles.loadingText}>Starting ParkIt...</Text>
+        <Text style={styles.loadingText}>Loading ParkIt...</Text>
       </SafeAreaView>
     );
   }
 
-  // ─── MAIN RENDER ──────────────────────────────────────────
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar
         barStyle="light-content"
-        backgroundColor={isConnected ? '#2E7D32' : '#D84315'}
+        backgroundColor={isParked ? '#E65100' : isConnected ? '#2E7D32' : '#1565C0'}
       />
 
-      {/* ── Header ── */}
-      <View
-        style={[
-          styles.header,
-          {backgroundColor: isConnected ? '#2E7D32' : '#D84315'},
-        ]}>
-        <Text style={styles.title}>🅿 ParkIt</Text>
-        <Text style={styles.subtitle}>Smart Parking Detection</Text>
+      {/* Header */}
+      <View style={[styles.header, { backgroundColor: isParked ? '#E65100' : isConnected ? '#2E7D32' : '#1565C0' }]}>
+        <Text style={styles.title}>🅿️ ParkIt</Text>
+        <Text style={styles.subtitle}>Smart Parking Assistant</Text>
 
         <View style={styles.badges}>
           <View style={styles.badge}>
             <Text style={styles.badgeText}>
-              {bluetoothEnabled ? '🔵 BT ON' : '⚫ BT OFF'}
+              {bluetoothEnabled ? '🔵 Bluetooth ON' : '⚫ Bluetooth OFF'}
             </Text>
           </View>
 
           <View style={styles.badge}>
             <Text style={styles.badgeText}>
-              {isGettingLocation ? '📡 GPS...' : locationStatus}
+              {isGettingLocation ? '📡 Locating...' : locationStatus}
             </Text>
           </View>
 
-          <View style={[styles.badge, !arModuleAvailable && styles.badgeWarning]}>
+          <View style={[styles.badge, !ActivityRecognitionModule && styles.badgeWarning]}>
             <Text style={styles.badgeText}>{arBadgeText}</Text>
           </View>
 
@@ -785,49 +969,190 @@ const BluetoothDemoScreen = () => {
       </View>
 
       <ScrollView style={styles.scroll} showsVerticalScrollIndicator={false}>
-        {/* ── Activity Recognition Card ── */}
+
+        {/* ═══════════════════════════════════════════════════════════
+            PARK / UNPARK BUTTONS CARD
+            ═══════════════════════════════════════════════════════════ */}
+        <View style={styles.parkingCard}>
+          <Text style={styles.parkingCardTitle}>🚗 Manual Parking Control</Text>
+          <Text style={styles.parkingCardSubtitle}>
+            Tap the buttons below to save your parking or unparking location
+          </Text>
+
+          <View style={styles.parkingButtonsRow}>
+            <TouchableOpacity
+              style={[
+                styles.parkButton,
+                isParked && styles.parkButtonDisabled,
+              ]}
+              onPress={handlePark}
+              disabled={isParked || isGettingLocation}
+            >
+              {isGettingLocation && !isParked ? (
+                <ActivityIndicator color="#FFF" size="small" />
+              ) : (
+                <>
+                  <Text style={styles.parkButtonIcon}>🅿️</Text>
+                  <Text style={styles.parkButtonText}>PARK</Text>
+                </>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.unparkButton,
+                !isParked && styles.unparkButtonDisabled,
+              ]}
+              onPress={handleUnpark}
+              disabled={!isParked || isGettingLocation}
+            >
+              {isGettingLocation && isParked ? (
+                <ActivityIndicator color="#FFF" size="small" />
+              ) : (
+                <>
+                  <Text style={styles.unparkButtonIcon}>🚗</Text>
+                  <Text style={styles.unparkButtonText}>UNPARK</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
+
+          {/* Parking Status */}
+          <View style={[styles.parkingStatusBox, { backgroundColor: isParked ? '#FFF3E0' : '#E8F5E9' }]}>
+            <Text style={[styles.parkingStatusText, { color: isParked ? '#E65100' : '#2E7D32' }]}>
+              {isParked ? '🅿️ Vehicle is PARKED' : '🚗 Vehicle is NOT PARKED'}
+            </Text>
+            {parkTime && isParked && (
+              <Text style={styles.parkingTimeText}>Parked at: {parkTime}</Text>
+            )}
+          </View>
+        </View>
+
+        {/* ═══════════════════════════════════════════════════════════
+            PARKED LOCATION DETAILS CARD
+            ═══════════════════════════════════════════════════════════ */}
+        {isParked && parkedLocation && (
+          <View style={styles.locationDetailCard}>
+            <Text style={styles.locationDetailTitle}>📍 Parked Location</Text>
+            
+            <View style={styles.coordinateRow}>
+              <View style={styles.coordinateBox}>
+                <Text style={styles.coordinateLabel}>Latitude</Text>
+                <Text style={styles.coordinateValue}>{formatCoordinate(parkedLocation.latitude)}</Text>
+              </View>
+              <View style={styles.coordinateBox}>
+                <Text style={styles.coordinateLabel}>Longitude</Text>
+                <Text style={styles.coordinateValue}>{formatCoordinate(parkedLocation.longitude)}</Text>
+              </View>
+            </View>
+
+            <View style={styles.locationMetaRow}>
+              <Text style={styles.locationMetaText}>
+                Source: {parkedLocation.source || 'GPS'}
+              </Text>
+              <Text style={styles.locationMetaText}>
+                Accuracy: {parkedLocation.accuracy ? `${Math.round(parkedLocation.accuracy)}m` : 'N/A'}
+              </Text>
+            </View>
+
+            <TouchableOpacity
+              style={styles.viewMapButton}
+              onPress={() => openMaps(parkedLocation)}
+            >
+              <Text style={styles.viewMapButtonText}>🗺️ View on Google Maps</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* ═══════════════════════════════════════════════════════════
+            UNPARK LOCATION DETAILS CARD
+            ═══════════════════════════════════════════════════════════ */}
+        {!isParked && unparkLocation && parkedLocation && (
+          <View style={styles.unparkDetailCard}>
+            <Text style={styles.unparkDetailTitle}>🚗 Trip Summary</Text>
+
+            {/* Parked Location */}
+            <View style={styles.tripSection}>
+              <Text style={styles.tripSectionTitle}>📍 Parked Location</Text>
+              <View style={styles.coordinateRowSmall}>
+                <Text style={styles.tripCoordText}>
+                  Lat: {formatCoordinate(parkedLocation.latitude)}
+                </Text>
+                <Text style={styles.tripCoordText}>
+                  Lng: {formatCoordinate(parkedLocation.longitude)}
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => openMaps(parkedLocation)}>
+                <Text style={styles.viewMapLink}>View on Map →</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Unpark Location */}
+            <View style={styles.tripSection}>
+              <Text style={styles.tripSectionTitle}>🏁 Unpark Location</Text>
+              <View style={styles.coordinateRowSmall}>
+                <Text style={styles.tripCoordText}>
+                  Lat: {formatCoordinate(unparkLocation.latitude)}
+                </Text>
+                <Text style={styles.tripCoordText}>
+                  Lng: {formatCoordinate(unparkLocation.longitude)}
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => openMaps(unparkLocation)}>
+                <Text style={styles.viewMapLink}>View on Map →</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Distance */}
+            {Number.isFinite(lastDistance) && (
+              <View style={styles.distanceBox}>
+                <Text style={styles.distanceLabel}>📏 Distance Traveled</Text>
+                <Text style={styles.distanceValue}>{formatDistance(lastDistance)}</Text>
+              </View>
+            )}
+
+            {unparkTime && (
+              <Text style={styles.unparkTimeText}>Unparked at: {unparkTime}</Text>
+            )}
+          </View>
+        )}
+
+        {/* Activity Recognition Card */}
         <View style={[styles.card, styles.arCard]}>
           <View style={styles.row}>
             <Text style={styles.cardTitle}>🏃 Activity Recognition</Text>
-            <View style={{flexDirection: 'row', gap: 8}}>
+            <View style={{ flexDirection: 'row', gap: 8 }}>
               <TouchableOpacity
-                style={[styles.btn, {backgroundColor: '#455A64'}]}
-                onPress={readLastAr}>
+                style={[styles.btn, { backgroundColor: '#455A64' }]}
+                onPress={readLastAr}
+              >
                 <Text style={styles.btnText}>↻</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[
-                  styles.btn,
-                  {backgroundColor: arEnabled ? '#D32F2F' : '#1976D2'},
-                ]}
-                onPress={arEnabled ? stopAr : startAr}>
-                <Text style={styles.btnText}>{arEnabled ? '⏹' : '▶'}</Text>
+                style={[styles.btn, { backgroundColor: arState.enabled ? '#D32F2F' : '#1976D2' }]}
+                onPress={arState.enabled ? stopAr : startAr}
+              >
+                <Text style={styles.btnText}>{arState.enabled ? '⏹' : '▶'}</Text>
               </TouchableOpacity>
             </View>
           </View>
 
-          {/* Status */}
           <Text style={styles.arInfoText}>
-            Permission: {arPermission ? '✅' : '❌'} | Status:{' '}
-            {arEnabled ? '🟢 ON' : '🔴 OFF'}
+            Permission: {arState.permission ? '✅ Granted' : '❌ Denied'} | Status: {arState.enabled ? '🟢 Active' : '🔴 Inactive'}
           </Text>
 
-          {/* Big Activity Display */}
-          <View style={[styles.activityBig, {backgroundColor: arCardColor()}]}>
-            <Text style={styles.activityIcon}>{activityIcon(arState)}</Text>
-            <Text style={styles.activityLabel}>{niceActivityLabel(arState)}</Text>
-            <Text style={styles.activityConf}>
-              {Math.round(arConfidence)}% confidence
-            </Text>
+          <View style={[styles.activityBig, { backgroundColor: activityConfig.color }]}>
+            <Text style={styles.activityIcon}>{activityConfig.icon}</Text>
+            <Text style={styles.activityLabel}>{activityConfig.label}</Text>
+            <Text style={styles.activityConf}>{Math.round(arState.confidence)}% confidence</Text>
           </View>
 
-          {/* Last Updated */}
           <Text style={styles.arInfoText}>
-            Last: {arUpdatedAt ? new Date(arUpdatedAt).toLocaleTimeString() : 'Never'}
+            Last Updated: {arState.updatedAt ? new Date(arState.updatedAt).toLocaleTimeString() : 'Never'}
           </Text>
         </View>
 
-        {/* ── Device Card ── */}
+        {/* Device Card */}
         <View style={styles.card}>
           <View style={styles.row}>
             <Text style={styles.cardTitle}>🎧 Tracking Device</Text>
@@ -836,17 +1161,16 @@ const BluetoothDemoScreen = () => {
               onPress={() => {
                 startBluetoothListening();
                 setShowDeviceModal(true);
-              }}>
-              <Text style={styles.btnText}>
-                {selectedDevice ? '✏️ Change' : '+ Select'}
-              </Text>
+              }}
+            >
+              <Text style={styles.btnText}>{selectedDevice ? '✏️ Change' : '+ Select'}</Text>
             </TouchableOpacity>
           </View>
 
           {selectedDevice ? (
             <View style={styles.deviceBox}>
               <Text style={styles.deviceIcon}>🎧</Text>
-              <View style={{flex: 1}}>
+              <View style={{ flex: 1 }}>
                 <Text style={styles.deviceName}>{selectedDevice.name}</Text>
                 <Text style={styles.deviceAddr}>{selectedDevice.address}</Text>
               </View>
@@ -856,170 +1180,127 @@ const BluetoothDemoScreen = () => {
             </View>
           ) : (
             <Text style={styles.muted}>
-              Koi device select nahi hai.{'\n'}
-              "Select" tap karke device choose karein.
+              No device selected.{'\n'}Tap "Select" to choose a Bluetooth device for automatic parking detection.
             </Text>
           )}
         </View>
 
-        {/* ── Status Card ── */}
+        {/* Bluetooth Status Card */}
         <View
           style={[
             styles.statusCard,
-            {backgroundColor: isConnected ? '#43A047' : '#FF5722'},
-          ]}>
-          <Animated.View
-            style={[styles.dot, {transform: [{scale: pulseAnim}]}]}
-          />
+            { backgroundColor: isConnected ? '#43A047' : '#78909C' },
+          ]}
+        >
+          <Animated.View style={[styles.dot, { transform: [{ scale: pulseAnim }] }]} />
           <Text style={styles.statusTitle}>
-            {isConnected ? '🚗 DRIVING' : '🅿 PARKED'}
+            {isConnected ? '🔗 CONNECTED' : '🔌 DISCONNECTED'}
           </Text>
           <Text style={styles.statusSub}>
             {isConnected
-              ? connectedDevice?.name || 'Connected'
-              : selectedDevice?.name || 'Select a device'}
+              ? connectedDevice?.name || 'Bluetooth Device Connected'
+              : selectedDevice?.name || 'Select a device to monitor'}
           </Text>
 
           {connectionTime && (
-            <Text style={styles.statusTime}>⏰ {connectionTime}</Text>
+            <Text style={styles.statusTime}>Last Update: {connectionTime}</Text>
           )}
 
-          {arEnabled && arState !== 'unknown' && (
+          {arState.enabled && arState.activity !== 'unknown' && (
             <View style={styles.arStatusBadge}>
               <Text style={styles.arStatusText}>
-                {activityIcon(arState)} {niceActivityLabel(arState)}
+                {activityConfig.icon} {activityConfig.label}
               </Text>
             </View>
           )}
-
-          {isConnected && drivingLocation && (
-            <Text style={styles.smallWhite}>
-              📍 Start: {formatLatLng6(drivingLocation)}
-            </Text>
-          )}
-
-          {!isConnected && parkedLocation && (
-            <>
-              <TouchableOpacity
-                style={styles.locBtn}
-                onPress={() => openMaps(parkedLocation)}>
-                <Text style={styles.locBtnText}>📍 View Parking Spot</Text>
-              </TouchableOpacity>
-
-              {Number.isFinite(lastDistance) && (
-                <Text style={styles.smallWhite}>
-                  📏 Distance: {Math.round(lastDistance)} m
-                </Text>
-              )}
-            </>
-          )}
         </View>
 
-        {/* ── Parked Location Card ── */}
-        {!isConnected && parkedLocation && (
-          <View style={styles.parkedCard}>
-            <Text style={styles.parkedTitle}>🅿 Parked Location</Text>
-            <Text style={styles.parkedBig}>{formatLatLng6(parkedLocation)}</Text>
-
-            <Text style={styles.parkedSource}>
-              Source: {parkedLocation.source || 'N/A'} | Accuracy:{' '}
-              {parkedLocation.accuracy
-                ? Math.round(parkedLocation.accuracy) + 'm'
-                : 'N/A'}
-            </Text>
-
-            {Number.isFinite(lastDistance) && (
-              <Text style={styles.parkedSource}>
-                📏 Distance: {Math.round(lastDistance)} m
-              </Text>
-            )}
-
-            <TouchableOpacity
-              style={styles.mapsBtn}
-              onPress={() => openMaps(parkedLocation)}>
-              <Text style={styles.mapsBtnText}>🗺 Open Google Maps</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-
-        {/* ── Location Test Card ── */}
+        {/* Location Test Card */}
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>📡 Location</Text>
-          <Text style={styles.locStatus}>Status: {locationStatus}</Text>
+          <Text style={styles.cardTitle}>📡 GPS Location</Text>
+          <Text style={styles.locStatus}>Current Status: {locationStatus}</Text>
           <TouchableOpacity style={styles.testBtn} onPress={testLocation}>
-            <Text style={styles.testBtnText}>📍 Test GPS</Text>
+            <Text style={styles.testBtnText}>📍 Test GPS Location</Text>
           </TouchableOpacity>
         </View>
 
-        {/* ── History Card ── */}
+        {/* History Card */}
         <View style={styles.card}>
           <View style={styles.row}>
             <Text style={styles.cardTitle}>📋 History</Text>
             {connectionHistory.length > 0 && (
               <TouchableOpacity onPress={clearHistory}>
-                <Text style={styles.clearBtn}>🗑 Clear</Text>
+                <Text style={styles.clearBtn}>🗑️ Clear All</Text>
               </TouchableOpacity>
             )}
           </View>
 
           {connectionHistory.length > 0 ? (
-            connectionHistory.slice(0, 10).map((item, i) => (
+            connectionHistory.slice(0, 15).map((item, i) => (
               <View key={i} style={styles.historyItem}>
                 <Text style={styles.historyIcon}>
-                  {item.type === 'connect' ? '🟢' : '🔴'}
+                  {item.type === 'connect' ? '🟢' : 
+                   item.type === 'disconnect' ? '🔴' : 
+                   item.type === 'park' ? '🅿️' : 
+                   item.type === 'unpark' ? '🚗' : '📍'}
                 </Text>
 
-                <View style={{flex: 1}}>
-                  <Text style={styles.historyDevice}>{item.device}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.historyDevice}>
+                    {item.type === 'park' ? 'Vehicle Parked' :
+                     item.type === 'unpark' ? 'Vehicle Unparked' :
+                     item.device || 'Unknown'}
+                  </Text>
 
                   <Text style={styles.historyTime}>
-                    ⏰ {item.time} | 📅 {item.date}
+                    🕐 {item.time} | 📅 {item.date}
                   </Text>
 
                   {item.activity && item.activity !== 'unknown' && (
                     <Text style={styles.historyActivity}>
-                      {activityIcon(item.activity)} {niceActivityLabel(item.activity)}
+                      {getActivityConfig(item.activity).icon} {getActivityConfig(item.activity).label}
                     </Text>
                   )}
 
                   {item.location && (
                     <TouchableOpacity onPress={() => openMaps(item.location)}>
                       <Text style={styles.historyLoc}>
-                        📍 {formatLatLng6(item.location)}
+                        📍 Lat: {formatCoordinate(item.location.latitude, 4)}, Lng: {formatCoordinate(item.location.longitude, 4)}
                       </Text>
                     </TouchableOpacity>
                   )}
 
-                  {item.type === 'disconnect' &&
+                  {(item.type === 'disconnect' || item.type === 'unpark') &&
                     Number.isFinite(item.distanceMeters) && (
                       <Text style={styles.historyDistance}>
-                        📏 Distance: {Math.round(item.distanceMeters)} m
+                        📏 Distance: {formatDistance(item.distanceMeters)}
                       </Text>
                     )}
                 </View>
               </View>
             ))
           ) : (
-            <Text style={styles.muted}>No history yet.</Text>
+            <Text style={styles.muted}>No history available yet. Park your vehicle to start tracking.</Text>
           )}
         </View>
 
-        {/* ── Refresh BT Button ── */}
+        {/* Refresh Button */}
         <TouchableOpacity
           style={styles.refreshBtn}
-          onPress={startBluetoothListening}>
-          <Text style={styles.refreshText}>🔄 Refresh Bluetooth</Text>
+          onPress={startBluetoothListening}
+        >
+          <Text style={styles.refreshText}>🔄 Refresh Bluetooth Connection</Text>
         </TouchableOpacity>
 
-        <View style={{height: 50}} />
+        <View style={{ height: 50 }} />
       </ScrollView>
 
-      {/* ── Device Select Modal ── */}
+      {/* Device Modal */}
       <Modal visible={showDeviceModal} transparent animationType="slide">
         <View style={styles.modalBg}>
           <View style={styles.modalBox}>
             <View style={styles.row}>
-              <Text style={styles.modalTitle}>Select Device</Text>
+              <Text style={styles.modalTitle}>Select Bluetooth Device</Text>
               <TouchableOpacity onPress={() => setShowDeviceModal(false)}>
                 <Text style={styles.modalX}>✕</Text>
               </TouchableOpacity>
@@ -1028,17 +1309,17 @@ const BluetoothDemoScreen = () => {
             {pairedDevices.length > 0 ? (
               <FlatList
                 data={pairedDevices}
-                keyExtractor={d => d.address}
-                renderItem={({item}) => (
+                keyExtractor={(d) => d.address}
+                renderItem={({ item }) => (
                   <TouchableOpacity
                     style={[
                       styles.modalDevice,
-                      selectedDevice?.address === item.address &&
-                        styles.modalDeviceSelected,
+                      selectedDevice?.address === item.address && styles.modalDeviceSelected,
                     ]}
-                    onPress={() => selectDevice(item)}>
+                    onPress={() => selectDevice(item)}
+                  >
                     <Text style={styles.modalDeviceIcon}>🎧</Text>
-                    <View style={{flex: 1}}>
+                    <View style={{ flex: 1 }}>
                       <Text style={styles.modalDeviceName}>{item.name}</Text>
                       <Text style={styles.modalDeviceAddr}>{item.address}</Text>
                     </View>
@@ -1049,13 +1330,13 @@ const BluetoothDemoScreen = () => {
                 )}
               />
             ) : (
-              <Text style={styles.muted}>No paired devices found.</Text>
+              <Text style={styles.muted}>
+                No paired Bluetooth devices found.{'\n'}Please pair a device in your phone's Bluetooth settings first.
+              </Text>
             )}
 
-            <TouchableOpacity
-              style={styles.modalRefresh}
-              onPress={startBluetoothListening}>
-              <Text style={styles.modalRefreshText}>🔄 Refresh</Text>
+            <TouchableOpacity style={styles.modalRefresh} onPress={startBluetoothListening}>
+              <Text style={styles.modalRefreshText}>🔄 Refresh Device List</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -1064,26 +1345,30 @@ const BluetoothDemoScreen = () => {
   );
 };
 
-// ─── STYLES ─────────────────────────────────────────────────
-const styles = StyleSheet.create({
-  container: {flex: 1, backgroundColor: '#F0F2F5'},
+// ═══════════════════════════════════════════════════════════
+// STYLES
+// ═══════════════════════════════════════════════════════════
 
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#F0F2F5' },
+  
   loading: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#1A237E',
   },
-  loadingText: {color: '#FFF', fontSize: 18, marginTop: 12},
-
+  loadingText: { color: '#FFF', fontSize: 18, marginTop: 12 },
+  
   header: {
     paddingTop: 16,
     paddingBottom: 20,
     paddingHorizontal: 20,
     alignItems: 'center',
   },
-  title: {fontSize: 28, fontWeight: 'bold', color: '#FFF'},
-  subtitle: {fontSize: 12, color: '#FFF', opacity: 0.85, marginTop: 2},
+  title: { fontSize: 28, fontWeight: 'bold', color: '#FFF' },
+  subtitle: { fontSize: 12, color: '#FFF', opacity: 0.85, marginTop: 2 },
+  
   badges: {
     flexDirection: 'row',
     marginTop: 12,
@@ -1097,11 +1382,226 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     borderRadius: 12,
   },
-  badgeWarning: {backgroundColor: 'rgba(255,160,0,0.5)'},
-  badgeText: {color: '#FFF', fontSize: 12, fontWeight: '600'},
+  badgeWarning: { backgroundColor: 'rgba(255,160,0,0.5)' },
+  badgeText: { color: '#FFF', fontSize: 11, fontWeight: '600' },
+  
+  scroll: { flex: 1, padding: 12 },
 
-  scroll: {flex: 1, padding: 12},
+  // ─── Parking Card Styles ────────────────────────────────────
+  parkingCard: {
+    backgroundColor: '#FFF',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 12,
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+  },
+  parkingCardTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#222',
+    textAlign: 'center',
+  },
+  parkingCardSubtitle: {
+    fontSize: 12,
+    color: '#666',
+    textAlign: 'center',
+    marginTop: 4,
+    marginBottom: 16,
+  },
+  parkingButtonsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  parkButton: {
+    flex: 1,
+    backgroundColor: '#E65100',
+    paddingVertical: 20,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 3,
+  },
+  parkButtonDisabled: {
+    backgroundColor: '#BDBDBD',
+  },
+  parkButtonIcon: {
+    fontSize: 32,
+  },
+  parkButtonText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#FFF',
+    marginTop: 4,
+  },
+  unparkButton: {
+    flex: 1,
+    backgroundColor: '#2E7D32',
+    paddingVertical: 20,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 3,
+  },
+  unparkButtonDisabled: {
+    backgroundColor: '#BDBDBD',
+  },
+  unparkButtonIcon: {
+    fontSize: 32,
+  },
+  unparkButtonText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#FFF',
+    marginTop: 4,
+  },
+  parkingStatusBox: {
+    marginTop: 16,
+    padding: 12,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  parkingStatusText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  parkingTimeText: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 4,
+  },
 
+  // ─── Location Detail Card Styles ────────────────────────────
+  locationDetailCard: {
+    backgroundColor: '#FFF',
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 12,
+    borderLeftWidth: 4,
+    borderLeftColor: '#E65100',
+    elevation: 2,
+  },
+  locationDetailTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#E65100',
+    marginBottom: 12,
+  },
+  coordinateRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  coordinateBox: {
+    flex: 1,
+    backgroundColor: '#FFF3E0',
+    padding: 12,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  coordinateLabel: {
+    fontSize: 11,
+    color: '#666',
+    marginBottom: 4,
+  },
+  coordinateValue: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#333',
+  },
+  locationMetaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 12,
+  },
+  locationMetaText: {
+    fontSize: 11,
+    color: '#888',
+  },
+  viewMapButton: {
+    backgroundColor: '#4285F4',
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  viewMapButtonText: {
+    color: '#FFF',
+    fontWeight: 'bold',
+    fontSize: 14,
+  },
+
+  // ─── Unpark Detail Card Styles ──────────────────────────────
+  unparkDetailCard: {
+    backgroundColor: '#FFF',
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 12,
+    borderLeftWidth: 4,
+    borderLeftColor: '#2E7D32',
+    elevation: 2,
+  },
+  unparkDetailTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#2E7D32',
+    marginBottom: 12,
+  },
+  tripSection: {
+    backgroundColor: '#F5F5F5',
+    padding: 12,
+    borderRadius: 10,
+    marginBottom: 10,
+  },
+  tripSectionTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 6,
+  },
+  coordinateRowSmall: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  tripCoordText: {
+    fontSize: 12,
+    color: '#555',
+  },
+  viewMapLink: {
+    fontSize: 12,
+    color: '#1976D2',
+    marginTop: 6,
+    fontWeight: '600',
+  },
+  distanceBox: {
+    backgroundColor: '#E8F5E9',
+    padding: 14,
+    borderRadius: 10,
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  distanceLabel: {
+    fontSize: 12,
+    color: '#666',
+  },
+  distanceValue: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: '#2E7D32',
+    marginTop: 4,
+  },
+  unparkTimeText: {
+    fontSize: 12,
+    color: '#666',
+    textAlign: 'center',
+    marginTop: 10,
+  },
+
+  // ─── Card Styles ────────────────────────────────────────────
   card: {
     backgroundColor: '#FFF',
     borderRadius: 14,
@@ -1109,41 +1609,40 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     elevation: 2,
   },
-  arCard: {borderLeftWidth: 4, borderLeftColor: '#1976D2'},
-
+  arCard: { borderLeftWidth: 4, borderLeftColor: '#1976D2' },
+  
   row: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 10,
   },
-  cardTitle: {fontSize: 16, fontWeight: 'bold', color: '#222'},
-
+  cardTitle: { fontSize: 16, fontWeight: 'bold', color: '#222' },
+  
   btn: {
     backgroundColor: '#1976D2',
     paddingHorizontal: 14,
     paddingVertical: 7,
     borderRadius: 10,
   },
-  btnText: {color: '#FFF', fontWeight: '600', fontSize: 13},
-
+  btnText: { color: '#FFF', fontWeight: '600', fontSize: 13 },
+  
   activityBig: {
     borderRadius: 14,
     padding: 20,
     alignItems: 'center',
     marginVertical: 10,
   },
-  activityIcon: {fontSize: 42},
+  activityIcon: { fontSize: 42 },
   activityLabel: {
     fontSize: 22,
     fontWeight: 'bold',
     color: '#FFF',
     marginTop: 6,
   },
-  activityConf: {fontSize: 13, color: 'rgba(255,255,255,0.85)', marginTop: 4},
-
-  arInfoText: {fontSize: 13, color: '#555', marginBottom: 4},
-
+  activityConf: { fontSize: 13, color: 'rgba(255,255,255,0.85)', marginTop: 4 },
+  arInfoText: { fontSize: 12, color: '#555', marginBottom: 4 },
+  
   deviceBox: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1151,20 +1650,21 @@ const styles = StyleSheet.create({
     padding: 14,
     borderRadius: 12,
   },
-  deviceIcon: {fontSize: 28, marginRight: 12},
-  deviceName: {fontSize: 15, fontWeight: 'bold', color: '#1565C0'},
-  deviceAddr: {fontSize: 11, color: '#64B5F6', marginTop: 2},
-  x: {fontSize: 22, color: '#F44336', paddingHorizontal: 8},
+  deviceIcon: { fontSize: 28, marginRight: 12 },
+  deviceName: { fontSize: 15, fontWeight: 'bold', color: '#1565C0' },
+  deviceAddr: { fontSize: 11, color: '#64B5F6', marginTop: 2 },
+  x: { fontSize: 22, color: '#F44336', paddingHorizontal: 8 },
   muted: {
     color: '#888',
     fontStyle: 'italic',
     textAlign: 'center',
     padding: 10,
+    lineHeight: 20,
   },
-
+  
   statusCard: {
     borderRadius: 18,
-    padding: 28,
+    padding: 24,
     alignItems: 'center',
     marginBottom: 12,
     elevation: 4,
@@ -1176,11 +1676,10 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.4)',
     marginBottom: 10,
   },
-  statusTitle: {fontSize: 26, fontWeight: 'bold', color: '#FFF'},
-  statusSub: {fontSize: 14, color: '#FFF', opacity: 0.9, marginTop: 4},
-  statusTime: {fontSize: 13, color: '#FFF', opacity: 0.8, marginTop: 6},
-  smallWhite: {fontSize: 12, color: '#FFF', opacity: 0.95, marginTop: 10},
-
+  statusTitle: { fontSize: 22, fontWeight: 'bold', color: '#FFF' },
+  statusSub: { fontSize: 13, color: '#FFF', opacity: 0.9, marginTop: 4 },
+  statusTime: { fontSize: 12, color: '#FFF', opacity: 0.8, marginTop: 6 },
+  
   arStatusBadge: {
     backgroundColor: 'rgba(255,255,255,0.25)',
     paddingHorizontal: 14,
@@ -1188,54 +1687,19 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     marginTop: 10,
   },
-  arStatusText: {color: '#FFF', fontWeight: '700', fontSize: 14},
-
-  locBtn: {
-    marginTop: 14,
-    backgroundColor: 'rgba(255,255,255,0.25)',
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 20,
-  },
-  locBtnText: {color: '#FFF', fontWeight: 'bold', fontSize: 14},
-
-  parkedCard: {
-    backgroundColor: '#FFF',
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 12,
-    borderLeftWidth: 4,
-    borderLeftColor: '#FF5722',
-    elevation: 2,
-  },
-  parkedTitle: {
-    fontSize: 15,
-    fontWeight: 'bold',
-    color: '#E65100',
-    marginBottom: 6,
-  },
-  parkedBig: {fontSize: 20, fontWeight: '700', color: '#222', marginTop: 4},
-  parkedSource: {fontSize: 11, color: '#888', marginTop: 6},
-  mapsBtn: {
-    backgroundColor: '#4285F4',
-    marginTop: 12,
-    padding: 13,
-    borderRadius: 10,
-    alignItems: 'center',
-  },
-  mapsBtnText: {color: '#FFF', fontWeight: 'bold', fontSize: 14},
-
-  locStatus: {fontSize: 13, color: '#555', marginBottom: 10},
+  arStatusText: { color: '#FFF', fontWeight: '700', fontSize: 14 },
+  
+  locStatus: { fontSize: 13, color: '#555', marginBottom: 10 },
   testBtn: {
     backgroundColor: '#9C27B0',
     padding: 13,
     borderRadius: 10,
     alignItems: 'center',
   },
-  testBtnText: {color: '#FFF', fontWeight: 'bold', fontSize: 14},
-
-  clearBtn: {fontSize: 13, color: '#F44336', fontWeight: '600'},
-
+  testBtnText: { color: '#FFF', fontWeight: 'bold', fontSize: 14 },
+  
+  clearBtn: { fontSize: 13, color: '#F44336', fontWeight: '600' },
+  
   historyItem: {
     flexDirection: 'row',
     paddingVertical: 12,
@@ -1243,18 +1707,18 @@ const styles = StyleSheet.create({
     borderBottomColor: '#F0F0F0',
     alignItems: 'flex-start',
   },
-  historyIcon: {fontSize: 18, marginRight: 10, marginTop: 2},
-  historyDevice: {fontSize: 14, fontWeight: '600', color: '#222'},
-  historyTime: {fontSize: 11, color: '#666', marginTop: 2},
+  historyIcon: { fontSize: 18, marginRight: 10, marginTop: 2 },
+  historyDevice: { fontSize: 14, fontWeight: '600', color: '#222' },
+  historyTime: { fontSize: 11, color: '#666', marginTop: 2 },
   historyActivity: {
     fontSize: 11,
     color: '#1976D2',
     marginTop: 2,
     fontWeight: '600',
   },
-  historyLoc: {fontSize: 11, color: '#1976D2', marginTop: 3},
-  historyDistance: {fontSize: 11, color: '#444', marginTop: 4, fontWeight: '600'},
-
+  historyLoc: { fontSize: 11, color: '#1976D2', marginTop: 3 },
+  historyDistance: { fontSize: 11, color: '#2E7D32', marginTop: 4, fontWeight: '600' },
+  
   refreshBtn: {
     backgroundColor: '#1976D2',
     padding: 15,
@@ -1262,8 +1726,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     elevation: 2,
   },
-  refreshText: {color: '#FFF', fontSize: 15, fontWeight: 'bold'},
-
+  refreshText: { color: '#FFF', fontSize: 15, fontWeight: 'bold' },
+  
   modalBg: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.55)',
@@ -1276,8 +1740,8 @@ const styles = StyleSheet.create({
     padding: 20,
     maxHeight: '65%',
   },
-  modalTitle: {fontSize: 18, fontWeight: 'bold', color: '#222'},
-  modalX: {fontSize: 26, color: '#999'},
+  modalTitle: { fontSize: 18, fontWeight: 'bold', color: '#222' },
+  modalX: { fontSize: 26, color: '#999' },
   modalDevice: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1291,10 +1755,10 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: '#1976D2',
   },
-  modalDeviceIcon: {fontSize: 26, marginRight: 12},
-  modalDeviceName: {fontSize: 15, fontWeight: '600', color: '#222'},
-  modalDeviceAddr: {fontSize: 11, color: '#888', marginTop: 2},
-  check: {fontSize: 22, color: '#4CAF50', fontWeight: 'bold'},
+  modalDeviceIcon: { fontSize: 26, marginRight: 12 },
+  modalDeviceName: { fontSize: 15, fontWeight: '600', color: '#222' },
+  modalDeviceAddr: { fontSize: 11, color: '#888', marginTop: 2 },
+  check: { fontSize: 22, color: '#4CAF50', fontWeight: 'bold' },
   modalRefresh: {
     backgroundColor: '#E3F2FD',
     padding: 14,
@@ -1302,7 +1766,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: 8,
   },
-  modalRefreshText: {color: '#1976D2', fontWeight: 'bold', fontSize: 14},
+  modalRefreshText: { color: '#1976D2', fontWeight: 'bold', fontSize: 14 },
 });
 
 export default BluetoothDemoScreen;
