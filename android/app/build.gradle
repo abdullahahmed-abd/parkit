@@ -12,7 +12,7 @@ def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
 android {
     ndkVersion rootProject.ext.ndkVersion
     buildToolsVersion rootProject.ext.buildToolsVersion
-    compileSdk rootProject.ext.compileSdkVersion  // ✅ FIXED
+    compileSdk rootProject.ext.compileSdkVersion
 
     namespace "com.islamicbank.newapp"
 
@@ -22,8 +22,8 @@ android {
 
     defaultConfig {
         applicationId "com.islamicbank.newapp"
-        minSdkVersion rootProject.ext.minSdkVersion      // ✅ FIXED
-        targetSdkVersion rootProject.ext.targetSdkVersion // ✅ FIXED
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
 
         versionCode 1
         versionName "3.0.4"
@@ -99,8 +99,11 @@ dependencies {
         implementation(jscFlavor)
     }
 
+    // Google Play Services
     implementation("com.google.android.gms:play-services-location:21.3.0")
     implementation("com.google.android.gms:play-services-base:18.5.0")
+
+    // AndroidX
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
 }

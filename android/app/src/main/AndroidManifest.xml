@@ -11,8 +11,10 @@
 
     <!-- ✅ Foreground service -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <!-- Android 14+ (safe for targetSdk high) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
+    <!-- ═══ NEW: Bluetooth foreground service type ═══ -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 
     <!-- ✅ Restart after reboot -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -37,7 +39,7 @@
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
 
-    <!--  Bluetooth Permissions -->
+    <!-- 🔵 Bluetooth Permissions -->
     <uses-permission
         android:name="android.permission.BLUETOOTH"
         android:maxSdkVersion="30" />
@@ -53,6 +55,9 @@
     <!-- 📍 Location Permissions -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <!-- ═══ NEW: Background location for BT detection when app minimized ═══ -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
 
     <!-- Bluetooth feature declaration -->
     <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
@@ -75,6 +80,15 @@
             android:name="com.islamicbank.newapp.ActivityRecognitionService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- ═══════════════════════════════════════════════════ -->
+        <!-- ═══ NEW: Bluetooth Monitoring Foreground Service ═══ -->
+        <!-- ═══════════════════════════════════════════════════ -->
+        <service
+            android:name="com.islamicbank.newapp.bluetooth.BluetoothService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
 
         <!-- ✅ Receiver that gets activity updates -->
         <receiver
