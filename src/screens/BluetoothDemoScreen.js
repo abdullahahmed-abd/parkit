@@ -128,8 +128,20 @@ const useStorage = () => {
     catch (e) { L.error('Save:', k, e); }
   }, []);
   const load = useCallback(async (k) => {
-    try { const d = await AsyncStorage.getItem(k); return d ? JSON.parse(d) : null; }
-    catch (e) { L.error('Load:', k, e); return null; }
+    try {
+      const d = await AsyncStorage.getItem(k);
+      if (!d) return null;
+      try {
+        return JSON.parse(d);
+      } catch (parseError) {
+        L.error('Parse error for key:', k, parseError);
+        await AsyncStorage.removeItem(k);
+        return null;
+      }
+    } catch (e) {
+      L.error('Load:', k, e);
+      return null;
+    }
   }, []);
   const remove = useCallback(async (k) => {
     try { await AsyncStorage.multiRemove(Array.isArray(k) ? k : [k]); }
@@ -172,11 +184,16 @@ const BluetoothDemoScreen = () => {
     perm: false, on: false, act: 'unknown', conf: 0, at: 0,
   });
 
+  // User Guidance Message State
+  const [guidanceMessage, setGuidanceMessage] = useState(null);
+
   // ─── REFS ───────────────────────────────────────────────
   const mountRef = useRef(true);
   const arSubRef = useRef(null);
   const arPollRef = useRef(null);
   const btInitRef = useRef(false);
+  const isInitialLoadRef = useRef(true);
+  const disconnectProcessingRef = useRef(false); // Prevent duplicate disconnect handling
 
   const selRef = useLatestRef(selDevice);
   const connDevRef = useLatestRef(connDev);
@@ -185,6 +202,7 @@ const BluetoothDemoScreen = () => {
   const parkLocRef = useLatestRef(parkLoc);
   const isOccupiedRef = useLatestRef(isOccupied);
   const connectedRef = useLatestRef(connected);
+  const btEnabledRef = useLatestRef(btEnabled);
 
   // ─── HOOKS ──────────────────────────────────────────────
   const pulse = usePulse(connected || isOccupied);
@@ -203,6 +221,32 @@ const BluetoothDemoScreen = () => {
     if (!ar.on) return 'AR OFF';
     return `${actCfg.icon} ${actCfg.label}`;
   }, [ar.on, actCfg]);
+
+  // ═══════════════════════════════════════════════════════════
+  // GUIDANCE MESSAGE HELPERS
+  // ═══════════════════════════════════════════════════════════
+
+  const showConnectDeviceGuidance = useCallback(() => {
+    setGuidanceMessage('connect_device');
+  }, []);
+
+  const showSelectDeviceGuidance = useCallback(() => {
+    setGuidanceMessage('select_device');
+  }, []);
+
+  const clearGuidance = useCallback(() => {
+    setGuidanceMessage(null);
+  }, []);
+
+  // Auto-clear guidance when conditions are met
+  useEffect(() => {
+    if (guidanceMessage === 'connect_device' && connected) {
+      clearGuidance();
+    }
+    if (guidanceMessage === 'select_device' && selDevice) {
+      clearGuidance();
+    }
+  }, [connected, selDevice, guidanceMessage, clearGuidance]);
 
   // ═══════════════════════════════════════════════════════════
   // LOCATION
@@ -283,13 +327,16 @@ const BluetoothDemoScreen = () => {
   // ═══════════════════════════════════════════════════════════
 
   const handleOccupy = useCallback(async () => {
-    if (actionLock) return;
+    if (actionLock || !mountRef.current) return;
     try {
       setActionLock(true);
       setGettingLoc(true);
       const loc = await getLoc({ fresh: true });
-      if (!loc || !mountRef.current) {
-        if (mountRef.current) Alert.alert('Error', 'Could not get GPS. Enable location and try again.');
+
+      if (!mountRef.current) return;
+
+      if (!loc) {
+        Alert.alert('Error', 'Could not get GPS. Enable location and try again.');
         return;
       }
 
@@ -327,8 +374,9 @@ const BluetoothDemoScreen = () => {
           [{ text: 'OK' }, { text: '🗺️ Map', onPress: () => openMap(loc) }]);
       }
     } catch (e) {
+      if (!mountRef.current) return;
       L.error('Occupy:', e);
-      if (mountRef.current) Alert.alert('Error', 'Failed to occupy.');
+      Alert.alert('Error', 'Failed to occupy.');
     } finally {
       if (mountRef.current) { setGettingLoc(false); setActionLock(false); }
     }
@@ -339,13 +387,16 @@ const BluetoothDemoScreen = () => {
       Alert.alert('Notice', 'Occupy a spot first.');
       return;
     }
-    if (actionLock) return;
+    if (actionLock || !mountRef.current) return;
     try {
       setActionLock(true);
       setGettingLoc(true);
       const loc = await getLoc({ fresh: true });
-      if (!loc || !mountRef.current) {
-        if (mountRef.current) Alert.alert('Error', 'Could not get GPS.');
+
+      if (!mountRef.current) return;
+
+      if (!loc) {
+        Alert.alert('Error', 'Could not get GPS.');
         return;
       }
 
@@ -370,8 +421,9 @@ const BluetoothDemoScreen = () => {
           [{ text: 'OK' }, { text: '🗺️ Occupied Spot', onPress: () => openMap(occupied) }]);
       }
     } catch (e) {
+      if (!mountRef.current) return;
       L.error('Vacate:', e);
-      if (mountRef.current) Alert.alert('Error', 'Failed to vacate.');
+      Alert.alert('Error', 'Failed to vacate.');
     } finally {
       if (mountRef.current) { setGettingLoc(false); setActionLock(false); }
     }
@@ -526,15 +578,21 @@ const BluetoothDemoScreen = () => {
 
     if (!mountRef.current) return;
 
+    // Reset disconnect processing flag
+    disconnectProcessingRef.current = false;
+
     const now = new Date();
 
-    // ═══ IMMEDIATE UI UPDATE ═══
+    // Clear any guidance message
+    clearGuidance();
+
+    // Immediate UI update
     setConnected(true);
     setConnDev(dev);
     setConnTime(now.toLocaleTimeString());
     L.log('✅ UI updated: CONNECTED');
 
-    // ═══ GET LIVE LOCATION ═══
+    // Get live location
     L.log('📡 Getting LIVE location for CONNECT...');
     const loc = await getLoc({ fresh: true, allowDefault: true });
 
@@ -552,7 +610,7 @@ const BluetoothDemoScreen = () => {
       });
     }
 
-    // ═══ ADD TO HISTORY ═══
+    // Add to history
     addHistory({
       type: 'connect',
       device: getDevName(dev),
@@ -564,7 +622,7 @@ const BluetoothDemoScreen = () => {
 
     L.log('✅ CONNECT handled completely!');
     L.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  }, [shouldHandle, getLoc, store, arRef, addHistory, getDevName, selRef]);
+  }, [shouldHandle, getLoc, store, arRef, addHistory, getDevName, selRef, clearGuidance]);
 
   // ─── ON DISCONNECT ────────────────────────────────────────
   const onBtDisconnect = useCallback(async (dev) => {
@@ -574,31 +632,62 @@ const BluetoothDemoScreen = () => {
     L.log('   Reason:', dev?.reason || 'normal');
     L.log('   Selected:', selRef.current?.name, selRef.current?.address);
     L.log('   Was connected:', connectedRef.current);
+    L.log('   Already processing:', disconnectProcessingRef.current);
     L.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
-    // Check if we should handle - also check if we WERE connected
-    if (!shouldHandle(dev) && !connectedRef.current) {
-      L.log('❌ Not our device & not connected - IGNORING');
+    // Check if we should handle - also check against last connected device
+    const lastConnected = BluetoothService.getLastConnectedDevice();
+    const devAddr = dev?.address || '';
+    const selAddr = selRef.current?.address || '';
+    const lastAddr = lastConnected?.address || '';
+
+    const isOurDevice = devAddr === selAddr ||
+      devAddr === lastAddr ||
+      connectedRef.current;
+
+    if (!isOurDevice) {
+      L.log('❌ Not our device - IGNORING');
       return;
     }
 
-    if (!mountRef.current) return;
+    // PREVENT DUPLICATE HANDLING
+    // If we're already processing a disconnect OR we're not connected, ignore
+    if (disconnectProcessingRef.current) {
+      L.log('⚠️ Already processing disconnect - IGNORING duplicate');
+      return;
+    }
+
+    if (!connectedRef.current) {
+      L.log('⚠️ Not connected - IGNORING duplicate disconnect');
+      return;
+    }
+
+    // Set flag to prevent duplicate processing
+    disconnectProcessingRef.current = true;
+
+    if (!mountRef.current) {
+      disconnectProcessingRef.current = false;
+      return;
+    }
 
     const now = new Date();
 
-    // ═══ IMMEDIATE UI UPDATE ═══
+    // Immediate UI update
     setConnected(false);
     setConnTime(now.toLocaleTimeString());
     L.log('✅ UI updated: DISCONNECTED');
 
-    // ═══ GET LIVE LOCATION (THIS IS OCCUPIED LOCATION!) ═══
-    L.log('📡 Getting LIVE location for DISCONNECT (OCCUPIED LOCATION)...');
+    // Get live location (THIS IS PARKED LOCATION!)
+    L.log('📡 Getting LIVE location for DISCONNECT (PARKED LOCATION)...');
     const loc = await getLoc({ fresh: true, allowDefault: true });
 
-    if (!mountRef.current) return;
+    if (!mountRef.current) {
+      disconnectProcessingRef.current = false;
+      return;
+    }
 
     if (loc) {
-      L.log('📍 OCCUPIED Location:', loc.latitude, loc.longitude, loc.source);
+      L.log('📍 PARKED Location:', loc.latitude, loc.longitude, loc.source);
       setParkLoc(loc);
       store.save(STORAGE_KEYS.PARKED_LOC, loc);
     }
@@ -608,7 +697,7 @@ const BluetoothDemoScreen = () => {
     const dist = (loc && startLoc) ? calcDist(startLoc, loc) : null;
     L.log('📏 Distance traveled:', dist ? fmtDist(dist) : 'N/A');
 
-    // ═══ ADD TO HISTORY ═══
+    // Add to history (ONLY ONCE!)
     addHistory({
       type: 'disconnect',
       device: getDevName(dev),
@@ -621,7 +710,13 @@ const BluetoothDemoScreen = () => {
 
     L.log('✅ DISCONNECT handled completely!');
     L.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  }, [shouldHandle, getLoc, store, driveLocRef, arRef, addHistory, getDevName, selRef, connectedRef]);
+
+    // Reset flag after a short delay to allow any lingering events to be ignored
+    setTimeout(() => {
+      disconnectProcessingRef.current = false;
+    }, 2000);
+
+  }, [getLoc, store, driveLocRef, arRef, addHistory, getDevName, selRef, connectedRef]);
 
   // ─── ON STATE CHANGE ──────────────────────────────────────
   const onBtStateChange = useCallback((state) => {
@@ -629,7 +724,6 @@ const BluetoothDemoScreen = () => {
     if (mountRef.current) {
       setBtEnabled(!!state?.enabled);
     }
-    // Note: Disconnect is handled in BluetoothService when BT turns OFF
   }, []);
 
   // ═══════════════════════════════════════════════════════════
@@ -637,94 +731,106 @@ const BluetoothDemoScreen = () => {
   // ═══════════════════════════════════════════════════════════
 
   const setupBt = useCallback(async () => {
+    // Prevent concurrent initialization
     if (btInitRef.current) {
       L.log('BT already initialized - skipping');
       return;
     }
 
+    // Set flag IMMEDIATELY to prevent race conditions
+    btInitRef.current = true;
     setBtSyncing(true);
     L.log('🔧 Setting up Bluetooth...');
 
     try {
       const on = await BluetoothService.isBluetoothEnabled();
-      if (mountRef.current) setBtEnabled(on);
+      if (!mountRef.current) return;
+      setBtEnabled(on);
 
       if (!on) {
         L.warn('⚠️ Bluetooth is OFF');
+        btInitRef.current = false;
         setBtSyncing(false);
         return;
       }
 
       const devs = await BluetoothService.getPairedDevices();
-      if (mountRef.current) setPaired(devs || []);
+      if (!mountRef.current) return;
+      setPaired(devs || []);
 
-      // Start listening with our handlers
+      // Start listening with wrapper functions
       const ok = await BluetoothService.startListening({
-        onConnect: onBtConnect,
-        onDisconnect: onBtDisconnect,
-        onStateChange: onBtStateChange,
+        onConnect: (dev) => {
+          if (mountRef.current) onBtConnect(dev);
+        },
+        onDisconnect: (dev) => {
+          if (mountRef.current) onBtDisconnect(dev);
+        },
+        onStateChange: (state) => {
+          if (mountRef.current) onBtStateChange(state);
+        },
       });
 
-      if (ok) {
-        btInitRef.current = true;
-        L.log('✅ BT listeners ready!');
+      if (!ok) {
+        btInitRef.current = false;
+        L.error('Failed to start BT listening');
+        setBtSyncing(false);
+        return;
+      }
 
-        // Check if selected device is already connected
-        const sel = selRef.current;
-        if (sel?.address) {
-          L.log('Checking if', sel.name, 'is already connected...');
-          const isConn = await BluetoothService.isDeviceConnected(sel.address);
+      L.log('✅ BT listeners ready!');
 
-          if (isConn && mountRef.current) {
-            L.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-            L.log('📱 DEVICE ALREADY CONNECTED AT STARTUP!');
-            L.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      // Check if selected device is already connected
+      const sel = selRef.current;
+      if (sel?.address && mountRef.current) {
+        L.log('Checking if', sel.name, 'is already connected...');
+        const isConn = await BluetoothService.isDeviceConnected(sel.address);
 
-            const now = new Date();
-            setConnected(true);
-            setConnDev(sel);
-            setConnTime(now.toLocaleTimeString());
+        if (isConn && mountRef.current) {
+          L.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+          L.log('📱 DEVICE ALREADY CONNECTED AT STARTUP!');
+          L.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
-            // Store in service
-            BluetoothService.setLastConnectedDevice({
-              address: sel.address,
-              name: sel.name,
+          const now = new Date();
+          setConnected(true);
+          setConnDev(sel);
+          setConnTime(now.toLocaleTimeString());
+
+          BluetoothService.setLastConnectedDevice({
+            address: sel.address,
+            name: sel.name,
+          });
+
+          const loc = await getLoc({ fresh: true, allowDefault: true });
+          if (loc && mountRef.current) {
+            setDriveLoc(loc);
+            store.save(STORAGE_KEYS.DRIVING_LOC, loc);
+
+            addHistory({
+              type: 'connect',
+              device: sel.name,
+              time: now.toLocaleTimeString(),
+              date: now.toLocaleDateString(),
+              location: loc,
+              activity: arRef.current.act,
+              note: 'Already connected at app start',
             });
-
-            // Get location for already connected device
-            L.log('📡 Getting location for already connected device...');
-            const loc = await getLoc({ fresh: true, allowDefault: true });
-
-            if (loc && mountRef.current) {
-              L.log('📍 Startup Location:', loc.latitude, loc.longitude);
-              setDriveLoc(loc);
-              store.save(STORAGE_KEYS.DRIVING_LOC, loc);
-
-              // Add to history
-              addHistory({
-                type: 'connect',
-                device: sel.name,
-                time: now.toLocaleTimeString(),
-                date: now.toLocaleDateString(),
-                location: loc,
-                activity: arRef.current.act,
-                note: 'Already connected at app start',
-              });
-            }
           }
         }
       }
     } catch (e) {
+      btInitRef.current = false;
       L.error('Setup BT error:', e);
     } finally {
       if (mountRef.current) setBtSyncing(false);
     }
-  }, [onBtConnect, onBtDisconnect, onBtStateChange, selRef, getLoc, store, addHistory, arRef]);
+  }, [onBtConnect, onBtDisconnect, onBtStateChange, getLoc, store, addHistory, arRef, selRef]);
 
   const restartBt = useCallback(async () => {
     if (btSyncing) return;
     L.log('🔄 Restarting Bluetooth...');
     btInitRef.current = false;
+    disconnectProcessingRef.current = false;
     await BluetoothService.stopListening();
     await setupBt();
   }, [btSyncing, setupBt]);
@@ -739,72 +845,179 @@ const BluetoothDemoScreen = () => {
     } catch (e) { L.error('Refresh:', e); }
   }, []);
 
-  // ─── WHEN SELECTED DEVICE CHANGES ─────────────────────
-  useEffect(() => {
-    if (!selDevice || bootLoading) return;
+  // ═══════════════════════════════════════════════════════════
+  // DEVICE SELECTION HANDLERS
+  // ═══════════════════════════════════════════════════════════
+
+  const selectDev = useCallback(async (dev) => {
+    if (!dev?.address) return;
 
     L.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    L.log('📱 SELECTED DEVICE CHANGED:', selDevice.name);
+    L.log('📱 USER SELECTED DEVICE:', dev.name);
     L.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
-    const reSetup = async () => {
-      btInitRef.current = false;
-      await BluetoothService.stopListening();
+    setSelDevice(dev);
+    setShowModal(false);
+    await store.save(STORAGE_KEYS.SELECTED_DEVICE, dev);
 
-      const ok = await BluetoothService.startListening({
-        onConnect: onBtConnect,
-        onDisconnect: onBtDisconnect,
-        onStateChange: onBtStateChange,
+    // Check if Bluetooth is enabled
+    const btOn = btEnabledRef.current;
+    if (!btOn) {
+      showConnectDeviceGuidance();
+      return;
+    }
+
+    // Check if this device is ALREADY connected via Bluetooth
+    let isAlreadyConnected = false;
+    try {
+      isAlreadyConnected = await BluetoothService.isDeviceConnected(dev.address);
+    } catch (e) {
+      L.warn('Error checking device connection:', e);
+    }
+
+    if (isAlreadyConnected) {
+      // Device is already connected
+      L.log('✅ Selected device is ALREADY connected!');
+
+      const now = new Date();
+      setConnected(true);
+      setConnDev(dev);
+      setConnTime(now.toLocaleTimeString());
+
+      BluetoothService.setLastConnectedDevice({
+        address: dev.address,
+        name: dev.name,
       });
 
-      if (ok) {
-        btInitRef.current = true;
+      // Get location
+      const loc = await getLoc({ fresh: true, allowDefault: true });
+      if (loc && mountRef.current) {
+        setDriveLoc(loc);
+        store.save(STORAGE_KEYS.DRIVING_LOC, loc);
 
-        // Check if newly selected device is already connected
-        if (selDevice.address) {
-          const isConn = await BluetoothService.isDeviceConnected(selDevice.address);
-          L.log('Is', selDevice.name, 'connected?', isConn);
+        addHistory({
+          type: 'connect',
+          device: dev.name,
+          time: now.toLocaleTimeString(),
+          date: now.toLocaleDateString(),
+          location: loc,
+          activity: arRef.current.act,
+          note: 'Device selected while connected',
+        });
+      }
 
-          if (isConn && mountRef.current) {
-            L.log('📱 Selected device is ALREADY CONNECTED!');
+      clearGuidance();
+    } else {
+      // Device is NOT connected - show guidance
+      L.log('⚠️ Selected device is NOT connected');
+      showConnectDeviceGuidance();
+
+      // Reset connection state
+      setConnected(false);
+      setConnDev(null);
+    }
+
+    // Re-setup BT listeners with new device
+    btInitRef.current = false;
+    disconnectProcessingRef.current = false;
+    await BluetoothService.stopListening();
+
+    const ok = await BluetoothService.startListening({
+      onConnect: (d) => { if (mountRef.current) onBtConnect(d); },
+      onDisconnect: (d) => { if (mountRef.current) onBtDisconnect(d); },
+      onStateChange: (s) => { if (mountRef.current) onBtStateChange(s); },
+    });
+
+    if (ok) btInitRef.current = true;
+
+  }, [store, btEnabledRef, getLoc, arRef, addHistory, showConnectDeviceGuidance, clearGuidance, onBtConnect, onBtDisconnect, onBtStateChange]);
+
+ const clearDev = useCallback(() => {
+  Alert.alert(
+    '🗑️ Remove Tracking Device?',
+    'Stop tracking this device?\n\nYou will need to select a device again to track parking.',
+    [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Remove',
+        style: 'destructive',
+        onPress: async () => {
+          L.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+          L.log('🗑️ USER REMOVED TRACKING DEVICE');
+          L.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+          const deviceName = selRef.current?.name || 'Unknown Device';
+          const wasConnected = connectedRef.current;
+
+          // If device was connected, add disconnect history
+          if (wasConnected || selRef.current) {
             const now = new Date();
+            
+            // Get current location for the disconnect entry
+            let loc = null;
+            try {
+              loc = await getLoc({ fresh: true, allowDefault: true });
+              if (loc) {
+                setParkLoc(loc);
+                store.save(STORAGE_KEYS.PARKED_LOC, loc);
+              }
+            } catch (e) {
+              L.warn('Could not get location for manual disconnect:', e);
+            }
 
-            setConnected(true);
-            setConnDev(selDevice);
-            setConnTime(now.toLocaleTimeString());
+            // Calculate distance if we have drive location
+            const startLoc = driveLocRef.current;
+            const dist = (loc && startLoc) ? calcDist(startLoc, loc) : null;
 
-            BluetoothService.setLastConnectedDevice({
-              address: selDevice.address,
-              name: selDevice.name,
+            // Add disconnect history entry
+            addHistory({
+              type: 'disconnect',
+              device: deviceName,
+              time: now.toLocaleTimeString(),
+              date: now.toLocaleDateString(),
+              location: loc,
+              distanceMeters: dist,
+              activity: arRef.current.act,
+              note: 'Manually removed from app',
             });
 
-            // Get location
-            const loc = await getLoc({ fresh: true, allowDefault: true });
-            if (loc && mountRef.current) {
-              L.log('📍 Location:', loc.latitude, loc.longitude);
-              setDriveLoc(loc);
-
-              addHistory({
-                type: 'connect',
-                device: selDevice.name,
-                time: now.toLocaleTimeString(),
-                date: now.toLocaleDateString(),
-                location: loc,
-                activity: arRef.current.act,
-                note: 'Device selected while connected',
-              });
-            }
-          } else {
-            // Device not connected
-            setConnected(false);
-            setConnDev(null);
+            L.log('📝 Added disconnect history for manual removal');
           }
-        }
-      }
-    };
 
-    reSetup();
-  }, [selDevice]); // eslint-disable-line react-hooks/exhaustive-deps
+          // Clear device state
+          setSelDevice(null);
+          setConnected(false);
+          setConnDev(null);
+          setConnTime(null);
+          await store.remove(STORAGE_KEYS.SELECTED_DEVICE);
+
+          // Show guidance to select a new device
+          showSelectDeviceGuidance();
+        }
+      },
+    ]
+  );
+}, [store, showSelectDeviceGuidance, selRef, connectedRef, getLoc, driveLocRef, arRef, addHistory]);
+  const clearAll = useCallback(() => {
+    Alert.alert('Clear All', 'Delete everything?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete', style: 'destructive', onPress: async () => {
+          setHistory([]); setParkLoc(null); setDriveLoc(null); setVacateLoc(null);
+          setIsOccupied(false); setOccupyTime(null); setVacateTime(null); setConnTime(null);
+          await store.remove([STORAGE_KEYS.HISTORY, STORAGE_KEYS.PARKED_LOC,
+          STORAGE_KEYS.DRIVING_LOC, STORAGE_KEYS.PARKING_STATUS]);
+        }
+      },
+    ]);
+  }, [store]);
+
+
+
+
+
+
+
 
   // ═══════════════════════════════════════════════════════════
   // INIT & CLEANUP
@@ -825,17 +1038,26 @@ const BluetoothDemoScreen = () => {
       if (parked) setParkLoc(parked);
       if (drv) setDriveLoc(drv);
       if (status && typeof status === 'object') {
-        // Support both old (isParked) and new (isOccupied) keys
         setIsOccupied(Boolean(status.isOccupied ?? status.isParked));
         const timeKey = status.occupyTime || status.parkTime;
         if (timeKey) try { setOccupyTime(new Date(timeKey).toLocaleTimeString()); } catch { }
       }
+
+      // Show guidance if no device selected
+      if (!dev) {
+        setTimeout(() => {
+          if (mountRef.current && !selRef.current) {
+            showSelectDeviceGuidance();
+          }
+        }, 500);
+      }
     } catch (e) { L.error('Load data:', e); }
-  }, [store]);
+  }, [store, showSelectDeviceGuidance, selRef]);
 
   useEffect(() => {
     L.log('🚀 App mounting...');
     mountRef.current = true;
+    isInitialLoadRef.current = true;
 
     const init = async () => {
       try {
@@ -843,6 +1065,7 @@ const BluetoothDemoScreen = () => {
         await loadData();
         await setupBt();
         await initAR();
+        isInitialLoadRef.current = false;
       } catch (e) { L.error('Init:', e); }
       finally { if (mountRef.current) setBootLoading(false); }
     };
@@ -852,6 +1075,7 @@ const BluetoothDemoScreen = () => {
       L.log('🛑 Unmounting...');
       mountRef.current = false;
       btInitRef.current = false;
+      disconnectProcessingRef.current = false;
       try { BluetoothService.stopListening(); } catch { }
       try { arSubRef.current?.remove(); arSubRef.current = null; } catch { }
       if (arPollRef.current) { clearInterval(arPollRef.current); arPollRef.current = null; }
@@ -871,40 +1095,6 @@ const BluetoothDemoScreen = () => {
         [{ text: 'OK' }, { text: '🗺️', onPress: () => openMap(loc) }]);
     } catch { Alert.alert('Error', 'Location failed.'); }
   }, [getLoc, openMap]);
-
-  const selectDev = useCallback(async (dev) => {
-    if (!dev?.address) return;
-    setSelDevice(dev);
-    setShowModal(false);
-    await store.save(STORAGE_KEYS.SELECTED_DEVICE, dev);
-    Alert.alert('✅ Selected', `"${dev.name}" will be tracked.\n\nConnect/Disconnect this device and location will be saved automatically!`);
-  }, [store]);
-
-  const clearDev = useCallback(() => {
-    Alert.alert('Remove Device', 'Stop tracking?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Remove', style: 'destructive', onPress: async () => {
-          setSelDevice(null); setConnected(false); setConnDev(null);
-          await store.remove(STORAGE_KEYS.SELECTED_DEVICE);
-        }
-      },
-    ]);
-  }, [store]);
-
-  const clearAll = useCallback(() => {
-    Alert.alert('Clear All', 'Delete everything?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete', style: 'destructive', onPress: async () => {
-          setHistory([]); setParkLoc(null); setDriveLoc(null); setVacateLoc(null);
-          setIsOccupied(false); setOccupyTime(null); setVacateTime(null); setConnTime(null);
-          await store.remove([STORAGE_KEYS.HISTORY, STORAGE_KEYS.PARKED_LOC,
-          STORAGE_KEYS.DRIVING_LOC, STORAGE_KEYS.PARKING_STATUS]);
-        }
-      },
-    ]);
-  }, [store]);
 
   // ═══════════════════════════════════════════════════════════
   // RENDER
@@ -941,7 +1131,59 @@ const BluetoothDemoScreen = () => {
 
       <ScrollView style={S.scroll} showsVerticalScrollIndicator={false}>
 
-        {/* ═══ DEVICE SELECTION - PROMINENT ═══ */}
+        {/* ═══ GUIDANCE MESSAGE BANNER ═══ */}
+        {guidanceMessage && (
+          <View style={[
+            S.guidanceBanner,
+            {
+              backgroundColor: guidanceMessage === 'connect_device' ? '#FFF3E0' : '#E3F2FD',
+              borderLeftColor: guidanceMessage === 'connect_device' ? '#FF9800' : '#1976D2',
+            }
+          ]}>
+            <View style={S.guidanceContent}>
+              <Text style={S.guidanceIcon}>
+                {guidanceMessage === 'connect_device' ? '🔗' : '📱'}
+              </Text>
+              <View style={S.guidanceTextContainer}>
+                <Text style={[
+                  S.guidanceTitle,
+                  { color: guidanceMessage === 'connect_device' ? '#E65100' : '#1565C0' }
+                ]}>
+                  {guidanceMessage === 'connect_device'
+                    ? 'Connect Your Bluetooth Device'
+                    : 'Select a Tracking Device'}
+                </Text>
+                <Text style={S.guidanceSubtitle}>
+                  {guidanceMessage === 'connect_device'
+                    ? 'Turn on your car stereo or Bluetooth device to start tracking'
+                    : 'Choose a Bluetooth device to track your parking location'}
+                </Text>
+              </View>
+            </View>
+            <TouchableOpacity
+              style={S.guidanceAction}
+              onPress={() => {
+                if (guidanceMessage === 'select_device') {
+                  refreshDevs();
+                  setShowModal(true);
+                } else {
+                  Linking.openSettings();
+                }
+              }}>
+              <Text style={[
+                S.guidanceActionText,
+                { color: guidanceMessage === 'connect_device' ? '#E65100' : '#1565C0' }
+              ]}>
+                {guidanceMessage === 'connect_device' ? '⚙️ BT Settings' : '+ Select Device'}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={S.guidanceClose} onPress={clearGuidance}>
+              <Text style={S.guidanceCloseText}>✕</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* ═══ DEVICE SELECTION ═══ */}
         <View style={[S.card, { borderLeftWidth: 4, borderLeftColor: selDevice ? '#4CAF50' : '#FF9800' }]}>
           <View style={S.row}>
             <Text style={S.cardT}>🎧 {selDevice ? 'Tracking Device' : '⚠️ Select a Device First!'}</Text>
@@ -955,6 +1197,11 @@ const BluetoothDemoScreen = () => {
               <View style={{ flex: 1 }}>
                 <Text style={S.devName}>{selDevice.name}</Text>
                 <Text style={S.devAddr}>{selDevice.address}</Text>
+                <View style={[S.connIndicator, { backgroundColor: connected ? '#E8F5E9' : '#FFF3E0' }]}>
+                  <Text style={{ color: connected ? '#2E7D32' : '#E65100', fontSize: 12, fontWeight: '600' }}>
+                    {connected ? '🟢 Connected' : '🔴 Not Connected'}
+                  </Text>
+                </View>
               </View>
               <TouchableOpacity onPress={clearDev}>
                 <Text style={{ fontSize: 22, color: '#F44336', paddingHorizontal: 8 }}>✕</Text>
@@ -974,8 +1221,23 @@ const BluetoothDemoScreen = () => {
         <View style={[S.btCard, { backgroundColor: connected ? '#43A047' : '#78909C' }]}>
           <Animated.View style={[S.dot, { transform: [{ scale: pulse }] }]} />
           <Text style={S.btTitle}>{connected ? '🔗 CONNECTED' : '🔌 DISCONNECTED'}</Text>
-          <Text style={S.btSub}>{connected ? connDev?.name || 'Device Connected' : selDevice?.name || 'Select a device first'}</Text>
+          <Text style={S.btSub}>
+            {connected
+              ? connDev?.name || 'Device Connected'
+              : selDevice?.name
+                ? `Waiting for ${selDevice.name}...`
+                : 'Select a device first'}
+          </Text>
           {connTime && <Text style={S.btTime}>Last: {connTime}</Text>}
+
+          {!connected && selDevice && (
+            <View style={S.btHint}>
+              <Text style={S.btHintText}>
+                💡 Turn on your Bluetooth device to connect
+              </Text>
+            </View>
+          )}
+
           {ar.on && ar.act !== 'unknown' && (
             <View style={S.arTag}><Text style={S.arTagT}>{actCfg.icon} {actCfg.label}</Text></View>
           )}
@@ -1003,7 +1265,7 @@ const BluetoothDemoScreen = () => {
 
             {parkLoc && (
               <View style={{ marginTop: 10, padding: 12, backgroundColor: '#FFF3E0', borderRadius: 10 }}>
-                <Text style={{ fontWeight: '600', color: '#E65100' }}>🅿️ Occupied (Disconnect):</Text>
+                <Text style={{ fontWeight: '600', color: '#E65100' }}>🅿️ Parked (Disconnect):</Text>
                 <Text style={{ color: '#333', marginTop: 4 }}>
                   {fmtCoord(parkLoc.latitude)}, {fmtCoord(parkLoc.longitude)}
                 </Text>
@@ -1018,7 +1280,7 @@ const BluetoothDemoScreen = () => {
           </View>
         )}
 
-        {/* ═══ MANUAL PARKING (OCCUPY/VACATE) ═══ */}
+        {/* ═══ MANUAL PARKING ═══ */}
         <View style={S.parkCard}>
           <Text style={S.parkTitle}>🚗 Manual Parking</Text>
           <Text style={S.parkSub}>Or save location manually</Text>
@@ -1205,6 +1467,12 @@ const BluetoothDemoScreen = () => {
               Choose the Bluetooth device you want to track{'\n'}(e.g., car stereo, earphones)
             </Text>
 
+            <View style={S.modalInfo}>
+              <Text style={S.modalInfoText}>
+                💡 After selecting, connect your Bluetooth device to start tracking
+              </Text>
+            </View>
+
             {paired.length > 0 ? (
               <FlatList
                 data={paired}
@@ -1225,7 +1493,16 @@ const BluetoothDemoScreen = () => {
                 )}
               />
             ) : (
-              <Text style={S.muted}>No paired devices found.{'\n'}Pair a device in Bluetooth settings first.</Text>
+              <View style={S.modalEmpty}>
+                <Text style={S.modalEmptyIcon}>📱</Text>
+                <Text style={S.modalEmptyTitle}>No Paired Devices Found</Text>
+                <Text style={S.modalEmptyText}>
+                  Pair a Bluetooth device first in your phone's settings
+                </Text>
+                <TouchableOpacity style={S.modalSettingsBtn} onPress={() => Linking.openSettings()}>
+                  <Text style={S.modalSettingsBtnT}>⚙️ Open Settings</Text>
+                </TouchableOpacity>
+              </View>
             )}
 
             <TouchableOpacity style={S.modalRefresh} onPress={refreshDevs}>
@@ -1257,6 +1534,82 @@ const S = StyleSheet.create({
 
   scroll: { flex: 1, padding: 12 },
 
+  guidanceBanner: {
+    borderRadius: 12,
+    borderLeftWidth: 4,
+    padding: 14,
+    marginBottom: 12,
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+  },
+  guidanceContent: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  guidanceIcon: {
+    fontSize: 28,
+    marginRight: 12,
+  },
+  guidanceTextContainer: {
+    flex: 1,
+  },
+  guidanceTitle: {
+    fontSize: 15,
+    fontWeight: 'bold',
+    marginBottom: 4,
+  },
+  guidanceSubtitle: {
+    fontSize: 12,
+    color: '#666',
+    lineHeight: 18,
+  },
+  guidanceAction: {
+    marginTop: 12,
+    alignSelf: 'flex-start',
+    backgroundColor: 'rgba(0,0,0,0.05)',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  guidanceActionText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  guidanceClose: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    padding: 4,
+  },
+  guidanceCloseText: {
+    fontSize: 18,
+    color: '#999',
+  },
+
+  connIndicator: {
+    marginTop: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 6,
+    alignSelf: 'flex-start',
+  },
+
+  btHint: {
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 10,
+    marginTop: 12,
+  },
+  btHintText: {
+    color: '#FFF',
+    fontSize: 12,
+    textAlign: 'center',
+  },
+
   parkCard: { backgroundColor: '#FFF', borderRadius: 16, padding: 20, marginBottom: 12, elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4 },
   parkTitle: { fontSize: 18, fontWeight: 'bold', color: '#222', textAlign: 'center' },
   parkSub: { fontSize: 12, color: '#666', textAlign: 'center', marginTop: 4, marginBottom: 16 },
@@ -1269,17 +1622,6 @@ const S = StyleSheet.create({
   statusBox: { marginTop: 16, padding: 12, borderRadius: 10, alignItems: 'center' },
   statusBoxT: { fontSize: 14, fontWeight: '600' },
   statusTime: { fontSize: 12, color: '#666', marginTop: 4 },
-
-  locCard: { backgroundColor: '#FFF', borderRadius: 14, padding: 16, marginBottom: 12, borderLeftWidth: 4, borderLeftColor: '#E65100', elevation: 2 },
-  locTitle: { fontSize: 16, fontWeight: 'bold', color: '#E65100', marginBottom: 12 },
-  coordRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 12 },
-  coordBox: { flex: 1, backgroundColor: '#FFF3E0', padding: 12, borderRadius: 10, alignItems: 'center' },
-  coordL: { fontSize: 11, color: '#666', marginBottom: 4 },
-  coordV: { fontSize: 14, fontWeight: 'bold', color: '#333' },
-  metaRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 12 },
-  metaT: { fontSize: 11, color: '#888' },
-  mapBtn: { backgroundColor: '#4285F4', marginTop: 12, padding: 12, borderRadius: 10, alignItems: 'center' },
-  mapBtnT: { color: '#FFF', fontWeight: 'bold', fontSize: 14 },
 
   tripCard: { backgroundColor: '#FFF', borderRadius: 14, padding: 16, marginBottom: 12, borderLeftWidth: 4, borderLeftColor: '#2E7D32', elevation: 2 },
   tripTitle: { fontSize: 16, fontWeight: 'bold', color: '#2E7D32', marginBottom: 12 },
@@ -1337,10 +1679,18 @@ const S = StyleSheet.create({
   modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
   modalBox: { backgroundColor: '#FFF', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, maxHeight: '70%' },
   modalT: { fontSize: 18, fontWeight: 'bold', color: '#222' },
+  modalInfo: { backgroundColor: '#E3F2FD', padding: 12, borderRadius: 10, marginBottom: 12 },
+  modalInfoText: { color: '#1565C0', fontSize: 12, textAlign: 'center' },
   modalDev: { flexDirection: 'row', alignItems: 'center', padding: 14, backgroundColor: '#F5F5F5', borderRadius: 12, marginBottom: 10 },
   modalDevActive: { backgroundColor: '#E3F2FD', borderWidth: 2, borderColor: '#1976D2' },
   modalDevN: { fontSize: 15, fontWeight: '600', color: '#222' },
   modalDevA: { fontSize: 11, color: '#888', marginTop: 2 },
+  modalEmpty: { alignItems: 'center', padding: 30 },
+  modalEmptyIcon: { fontSize: 48, marginBottom: 12 },
+  modalEmptyTitle: { fontSize: 16, fontWeight: 'bold', color: '#333', marginBottom: 8 },
+  modalEmptyText: { fontSize: 13, color: '#666', textAlign: 'center', marginBottom: 16 },
+  modalSettingsBtn: { backgroundColor: '#1976D2', paddingHorizontal: 20, paddingVertical: 12, borderRadius: 10 },
+  modalSettingsBtnT: { color: '#FFF', fontWeight: 'bold', fontSize: 14 },
   modalRefresh: { backgroundColor: '#E3F2FD', padding: 14, borderRadius: 12, alignItems: 'center', marginTop: 8 },
   modalRefreshT: { color: '#1976D2', fontWeight: 'bold', fontSize: 14 },
 });
