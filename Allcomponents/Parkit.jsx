@@ -1,1309 +1,1606 @@
+// src/screens/ParkingMapScreen.js
 
-import React, {useEffect, useRef, useState} from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import {
-  SafeAreaView,
-  StyleSheet,
-  Text,
   View,
-  StatusBar,
-  ScrollView,
-  Alert,
+  Text,
+  StyleSheet,
   TouchableOpacity,
-  Animated,
-  FlatList,
-  Modal,
-  Linking,
+  Alert,
   ActivityIndicator,
-  PermissionsAndroid,
-  Platform,
   NativeModules,
-  DeviceEventEmitter,
+  Linking,
+  Modal,
+  ScrollView,
+  FlatList,
+  TextInput,
+  Keyboard,
+  Platform,
 } from 'react-native';
+import { WebView } from 'react-native-webview';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import BluetoothService from '../services/BluetoothService';
 
-const {BluetoothModule, ActivityRecognitionModule} = NativeModules;
+const { BluetoothModule } = NativeModules;
 
-/** ======================
- *  DEBUG LOGGER
- *  ====================== */
-const DEBUG = true;
-const ts = () => new Date().toISOString();
-const log = (...args) => DEBUG && console.log(`[ParkIt][${ts()}]`, ...args);
-const warn = (...args) => DEBUG && console.warn(`[ParkIt][${ts()}]`, ...args);
-const err = (...args) => DEBUG && console.error(`[ParkIt][${ts()}]`, ...args);
-
-const toNum = v => {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
+/* ─────────────────────────────────────────────────────────────
+   BACKEND CONFIGURATION
+────────────────────────────────────────────────────────────── */
+const BACKEND_CONFIG = {
+  baseUrl: 'https://cb38-2405-201-3037-e001-c059-8276-d489-7631.ngrok-free.app/parkit-api/operate',
+  timeout: 15000,
+  maxRetries: 2,
 };
 
-const isValidLatLng = (lat, lng) =>
-  Number.isFinite(lat) &&
-  Number.isFinite(lng) &&
-  Math.abs(lat) <= 90 &&
-  Math.abs(lng) <= 180;
+/* ─────────────────────────────────────────────────────────────
+   POLYLINE DECODER
+────────────────────────────────────────────────────────────── */
+const decodePolyline = (encoded) => {
+  if (!encoded || typeof encoded !== 'string') return [];
+  
+  const coordinates = [];
+  let index = 0;
+  let lat = 0;
+  let lng = 0;
 
-const formatLatLng6 = loc => {
-  const lat = toNum(loc?.latitude);
-  const lng = toNum(loc?.longitude);
-  if (!isValidLatLng(lat, lng)) return 'N/A';
-  return `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
-};
+  while (index < encoded.length) {
+    let shift = 0;
+    let result = 0;
+    let byte;
 
-// Haversine distance in meters
-const distanceMeters = (a, b) => {
-  const lat1 = toNum(a?.latitude);
-  const lon1 = toNum(a?.longitude);
-  const lat2 = toNum(b?.latitude);
-  const lon2 = toNum(b?.longitude);
+    // Decode latitude
+    do {
+      byte = encoded.charCodeAt(index++) - 63;
+      result |= (byte & 0x1f) << shift;
+      shift += 5;
+    } while (byte >= 0x20);
 
-  if (!isValidLatLng(lat1, lon1) || !isValidLatLng(lat2, lon2)) return null;
+    const deltaLat = result & 1 ? ~(result >> 1) : result >> 1;
+    lat += deltaLat;
 
-  const R = 6371000;
-  const toRad = x => (x * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const s1 = Math.sin(dLat / 2) ** 2;
-  const s2 =
-    Math.cos(toRad(lat1)) *
-    Math.cos(toRad(lat2)) *
-    Math.sin(dLon / 2) ** 2;
-  const c = 2 * Math.atan2(Math.sqrt(s1 + s2), Math.sqrt(1 - (s1 + s2)));
-  return R * c;
-};
+    // Decode longitude
+    shift = 0;
+    result = 0;
 
-const niceActivityLabel = s => {
-  switch (s) {
-    case 'still':
-      return 'STILL';
-    case 'walking':
-      return 'WALKING';
-    case 'running':
-      return 'RUNNING';
-    case 'in_vehicle':
-      return 'IN VEHICLE';
-    case 'on_bicycle':
-      return 'BICYCLE';
-    default:
-      return (s || 'UNKNOWN').toUpperCase();
+    do {
+      byte = encoded.charCodeAt(index++) - 63;
+      result |= (byte & 0x1f) << shift;
+      shift += 5;
+    } while (byte >= 0x20);
+
+    const deltaLng = result & 1 ? ~(result >> 1) : result >> 1;
+    lng += deltaLng;
+
+    // Convert to degrees and push [lng, lat] (GeoJSON format)
+    coordinates.push([lng / 1e5, lat / 1e5]);
   }
+
+  return coordinates;
 };
 
-const activityIcon = s => {
-  switch (s) {
-    case 'still':
-      return '🧍';
-    case 'walking':
-      return '🚶';
-    case 'running':
-      return '🏃';
-    case 'in_vehicle':
-      return '🚗';
-    case 'on_bicycle':
-      return '🚲';
-    default:
-      return '❓';
+/* ─────────────────────────────────────────────────────────────
+   LANGUAGE FIX HELPERS
+────────────────────────────────────────────────────────────── */
+const isAscii = (s) => typeof s === 'string' && /^[\x00-\x7F]*$/.test(s);
+const sanitizeStreetName = (name) => {
+  if (typeof name !== 'string') return '';
+  const trimmed = name.trim();
+  return trimmed && isAscii(trimmed) ? trimmed : '';
+};
+
+/* ─────────────────────────────────────────────────────────────
+   TURN-BY-TURN ICONS + INSTRUCTIONS
+────────────────────────────────────────────────────────────── */
+const MANEUVER_ICONS = {
+  'turn-right': '➡️',
+  'turn-left': '⬅️',
+  'turn-slight-right': '↗️',
+  'turn-slight-left': '↖️',
+  'turn-sharp-right': '⤴️',
+  'turn-sharp-left': '⤵️',
+  continue: '⬆️',
+  straight: '⬆️',
+  roundabout: '🔄',
+  'roundabout-right': '🔄➡️',
+  'roundabout-left': '🔄⬅️',
+  'ramp-right': '🛣️➡️',
+  'ramp-left': '🛣️⬅️',
+  'on-ramp': '🛣️',
+  'off-ramp': '🛣️',
+  'fork-right': '🔱➡️',
+  'fork-left': '🔱⬅️',
+  merge: '🔀',
+  depart: '🚀',
+  arrive: '🎯',
+  'exit roundabout': '🔄',
+  default: '⬆️',
+};
+
+const getManeuverIcon = (type, modifier) => {
+  const key = modifier ? `${type}-${modifier}` : type;
+  return MANEUVER_ICONS[key] || MANEUVER_ICONS[type] || MANEUVER_ICONS.default;
+};
+
+const getManeuverInstruction = (type, modifier, name, distance) => {
+  const clean = sanitizeStreetName(name);
+  const streetName = clean || 'the road';
+  const distText = distance < 1000 ? `${Math.round(distance)} m` : `${(distance / 1000).toFixed(1)} km`;
+
+  if (type === 'depart') return `Start on ${streetName}`;
+  if (type === 'arrive') return 'You have arrived at your destination';
+
+  if (type === 'turn') {
+    if (modifier === 'right') return `Turn right onto ${streetName} (${distText})`;
+    if (modifier === 'left') return `Turn left onto ${streetName} (${distText})`;
+    if (modifier === 'slight right') return `Keep right onto ${streetName} (${distText})`;
+    if (modifier === 'slight left') return `Keep left onto ${streetName} (${distText})`;
+    if (modifier === 'sharp right') return `Sharp right onto ${streetName} (${distText})`;
+    if (modifier === 'sharp left') return `Sharp left onto ${streetName} (${distText})`;
   }
+
+  if (type === 'new name') return `Continue onto ${streetName} (${distText})`;
+  if (type === 'continue' || type === 'straight') return `Continue on ${streetName} (${distText})`;
+  if (type === 'roundabout') return `Take the roundabout onto ${streetName} (${distText})`;
+  if (type === 'exit roundabout') return `Exit roundabout onto ${streetName} (${distText})`;
+  if (type === 'fork') {
+    if (modifier === 'right') return `Keep right at fork (${distText})`;
+    if (modifier === 'left') return `Keep left at fork (${distText})`;
+  }
+  if (type === 'merge') return `Merge onto ${streetName} (${distText})`;
+
+  return `Continue ${distText}`;
 };
 
-const BluetoothDemoScreen = () => {
-  // UI loading states
-  const [bootLoading, setBootLoading] = useState(true);
-  const [isBtSyncing, setIsBtSyncing] = useState(false);
+/* ─────────────────────────────────────────────────────────────
+   BACKEND ROUTING SERVICE (NO CACHE - Always hits backend)
+────────────────────────────────────────────────────────────── */
+const RoutingService = {
+  requestCounter: 0,
+  failureCount: 0,
+  successCount: 0,
+  lastBackendMessage: '',
 
-  // Bluetooth states
-  const [bluetoothEnabled, setBluetoothEnabled] = useState(false);
-  const [pairedDevices, setPairedDevices] = useState([]);
-  const [selectedDevice, setSelectedDevice] = useState(null);
-  const [showDeviceModal, setShowDeviceModal] = useState(false);
+  fetchRoute: async (startLat, startLng, destLat, destLng, retryCount = 0) => {
+    const requestId = ++RoutingService.requestCounter;
+    console.log(`[BACKEND] #${requestId} Starting route request (NO CACHE - Fresh request)...`);
 
-  // Connection states
-  const [isConnected, setIsConnected] = useState(false);
-  const [connectedDevice, setConnectedDevice] = useState(null);
-  const [connectionTime, setConnectionTime] = useState(null);
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        console.log(`[BACKEND] #${requestId} Timeout!`);
+        controller.abort();
+      }, BACKEND_CONFIG.timeout);
 
-  // Location states
-  const [isGettingLocation, setIsGettingLocation] = useState(false);
-  const [locationStatus, setLocationStatus] = useState('Ready');
-  const [drivingLocation, setDrivingLocation] = useState(null);
-  const [parkedLocation, setParkedLocation] = useState(null);
+      const requestBody = {
+        startLat: startLat,
+        startLon: startLng,
+        endLat: destLat,
+        endLon: destLng,
+        requestType: 'ROUTE',
+      };
 
-  // History
-  const [connectionHistory, setConnectionHistory] = useState([]);
+      console.log(`[BACKEND] #${requestId} Request:`, JSON.stringify(requestBody));
 
-  // Activity Recognition states
-  const [arPermission, setArPermission] = useState(false);
-  const [arEnabled, setArEnabled] = useState(false);
-  const [arState, setArState] = useState('unknown');
-  const [arConfidence, setArConfidence] = useState(0);
-  const [arUpdatedAt, setArUpdatedAt] = useState(0);
+      const response = await fetch(BACKEND_CONFIG.baseUrl, {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify(requestBody),
+      });
 
-  const arSubRef = useRef(null);
-  const arPollRef = useRef(null);
+      clearTimeout(timeoutId);
 
-  // Animation
-  const pulseAnim = useRef(new Animated.Value(1)).current;
+      const responseText = await response.text();
+      console.log(`[BACKEND] #${requestId} Raw Response:`, responseText.substring(0, 500));
 
-  // Refs to avoid stale state issues
-  const selectedDeviceRef = useRef(null);
-  const connectedDeviceRef = useRef(null);
-  const drivingLocationRef = useRef(null);
-  const lastConnectedRef = useRef({address: null, name: null});
-
-  useEffect(() => {
-    selectedDeviceRef.current = selectedDevice;
-  }, [selectedDevice]);
-
-  useEffect(() => {
-    connectedDeviceRef.current = connectedDevice;
-  }, [connectedDevice]);
-
-  useEffect(() => {
-    drivingLocationRef.current = drivingLocation;
-  }, [drivingLocation]);
-
-  // ─── Mount ────────────────────────────────────────────────
-  useEffect(() => {
-    log('Screen mounted');
-    log('BluetoothModule exists?', !!BluetoothModule);
-    log('ActivityRecognitionModule exists?', !!ActivityRecognitionModule);
-
-    init();
-
-    return () => {
-      BluetoothService.stopListening();
-
-      if (arSubRef.current) {
-        arSubRef.current.remove();
-        arSubRef.current = null;
+      let data;
+      try {
+        data = JSON.parse(responseText);
+      } catch (parseError) {
+        throw new Error(`Invalid JSON response: ${responseText.substring(0, 100)}`);
       }
 
-      if (arPollRef.current) {
-        clearInterval(arPollRef.current);
-        arPollRef.current = null;
+      // Check for backend message
+      const backendMessage = data?.message || data?.geometry?.message || '';
+      RoutingService.lastBackendMessage = backendMessage;
+      
+      console.log(`[BACKEND] #${requestId} Backend Message:`, backendMessage);
+      console.log(`[BACKEND] #${requestId} Response Status:`, data?.status || data?.geometry?.code);
+
+      // Check if backend returned error status
+      if (data?.status === 'error' || data?.status === 'ERROR') {
+        throw new Error(backendMessage || 'Backend returned error status');
       }
-    };
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${backendMessage || 'Request failed'}`);
+      }
+
+      // Validate backend response
+      if (!data?.geometry?.routes || data.geometry.routes.length === 0) {
+        throw new Error(backendMessage || 'No routes in response');
+      }
+
+      if (data.geometry.code !== 'Ok') {
+        throw new Error(`Backend error: ${data.geometry.code} - ${backendMessage}`);
+      }
+
+      const route = data.geometry.routes[0];
+
+      // 🔥 DECODE POLYLINE TO COORDINATES
+      let coordinates = [];
+      
+      if (route.geometry && typeof route.geometry === 'string') {
+        console.log(`[BACKEND] #${requestId} Decoding polyline...`);
+        try {
+          coordinates = decodePolyline(route.geometry);
+          console.log(`[BACKEND] #${requestId} Decoded ${coordinates.length} points`);
+        } catch (decodeError) {
+          console.log(`[BACKEND] #${requestId} Decode error:`, decodeError.message);
+          throw new Error('Failed to decode polyline');
+        }
+      } else if (route.geometry?.coordinates) {
+        coordinates = route.geometry.coordinates;
+      }
+
+      if (coordinates.length === 0) {
+        throw new Error('No coordinates in route');
+      }
+
+      // Transform to internal format
+      const transformedData = {
+        routes: [{
+          geometry: {
+            coordinates: coordinates,
+            type: 'LineString',
+          },
+          distance: route.distance || 0,
+          duration: route.duration || 0,
+          legs: route.legs || [],
+          weight_name: route.weight_name,
+          weight: route.weight,
+        }],
+        waypoints: data.geometry.waypoints || [],
+        code: data.geometry.code,
+        backendMessage: backendMessage || 'Route fetched successfully',
+        status: 'success',
+      };
+
+      console.log(
+        `[BACKEND] #${requestId} ✅ SUCCESS! ` +
+        `Distance: ${route.distance}m, ` +
+        `Duration: ${route.duration}s, ` +
+        `Points: ${coordinates.length}, ` +
+        `Message: ${backendMessage}`
+      );
+      
+      RoutingService.successCount++;
+
+      return transformedData;
+
+    } catch (error) {
+      console.log(`[BACKEND] #${requestId} ❌ Error:`, error.message);
+      RoutingService.failureCount++;
+      RoutingService.lastBackendMessage = error.message;
+
+      // Retry logic
+      if (retryCount < BACKEND_CONFIG.maxRetries) {
+        const delay = 2000 * (retryCount + 1);
+        console.log(`[BACKEND] #${requestId} Retrying in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return RoutingService.fetchRoute(startLat, startLng, destLat, destLng, retryCount + 1);
+      }
+
+      throw new Error(error.message || 'Backend routing failed');
+    }
+  },
+
+  getStats: () => ({
+    totalRequests: RoutingService.requestCounter,
+    successfulRequests: RoutingService.successCount,
+    failedRequests: RoutingService.failureCount,
+    lastMessage: RoutingService.lastBackendMessage,
+  }),
+};
+
+/* ─────────────────────────────────────────────────────────────
+   CONSTANTS + DEMO DATA
+────────────────────────────────────────────────────────────── */
+const STORAGE_KEYS = {
+  MY_SPOT: 'myParkingSpot',
+  ROUTE_STATS: 'routeStats',
+};
+
+const DEFAULT_LOC = { latitude: 23.2599, longitude: 77.4126 };
+
+const generateDemoSpots = (centerLat, centerLng) => [
+  { id: 'demo_1', latitude: centerLat + 0.002, longitude: centerLng + 0.001, isOccupied: true, deviceName: 'Honda City', userId: 'user1', createdAt: Date.now() - 3600000 },
+  { id: 'demo_2', latitude: centerLat - 0.001, longitude: centerLng + 0.002, isOccupied: false, deviceName: 'Maruti Swift', userId: 'user2', createdAt: Date.now() - 7200000 },
+  { id: 'demo_3', latitude: centerLat + 0.001, longitude: centerLng - 0.002, isOccupied: true, deviceName: 'Hyundai i20', userId: 'user3', createdAt: Date.now() - 1800000 },
+  { id: 'demo_4', latitude: centerLat - 0.002, longitude: centerLng - 0.001, isOccupied: false, deviceName: 'Tata Nexon', userId: 'user4', createdAt: Date.now() - 900000 },
+  { id: 'demo_5', latitude: centerLat + 0.0015, longitude: centerLng + 0.0018, isOccupied: true, deviceName: 'Mahindra XUV', userId: 'user5', createdAt: Date.now() - 5400000 },
+];
+
+/* ─────────────────────────────────────────────────────────────
+   MAIN SCREEN
+────────────────────────────────────────────────────────────── */
+export default function ParkingMapScreen({ navigation }) {
+  const insets = useSafeAreaInsets();
+  const webRef = useRef(null);
+
+  const [loading, setLoading] = useState(true);
+  const [routeLoading, setRouteLoading] = useState(false);
+  const [gettingLoc, setGettingLoc] = useState(false);
+
+  const [userLoc, setUserLoc] = useState(DEFAULT_LOC);
+  const [mySpot, setMySpot] = useState(null);
+  const [allSpots, setAllSpots] = useState([]);
+
+  const [selectedSpot, setSelectedSpot] = useState(null);
+  const [showModal, setShowModal] = useState(false);
+
+  const [navigationSteps, setNavigationSteps] = useState([]);
+  const [showNavigation, setShowNavigation] = useState(false);
+  const [routeInfo, setRouteInfo] = useState(null);
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searching, setSearching] = useState(false);
+
+  const [routeStats, setRouteStats] = useState({
+    totalRequests: 0,
+    successfulRequests: 0,
+    failedRequests: 0,
+    lastMessage: '',
+  });
+
+  /* ───────── Utilities ───────── */
+  const validLL = (lat, lng) =>
+    Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180;
+
+  const calcDistance = (lat1, lng1, lat2, lng2) => {
+    const R = 6371000;
+    const rad = (x) => (x * Math.PI) / 180;
+    const dLat = rad(lat2 - lat1);
+    const dLng = rad(lng2 - lng1);
+    const a = Math.sin(dLat / 2) ** 2 + Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(dLng / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  };
+
+  const formatDistance = (meters) => {
+    if (!Number.isFinite(meters)) return 'N/A';
+    return meters < 1000 ? `${Math.round(meters)} m` : `${(meters / 1000).toFixed(1)} km`;
+  };
+
+  const formatTime = (timestamp) => {
+    if (!timestamp) return 'N/A';
+    const mins = Math.floor((Date.now() - timestamp) / 60000);
+    if (mins < 60) return `${mins} min ago`;
+    return `${Math.floor(mins / 60)} hr ago`;
+  };
+
+  const formatDuration = (seconds) => {
+    if (!seconds) return 'N/A';
+    const mins = Math.round(seconds / 60);
+    if (mins < 60) return `${mins} min`;
+    return `${Math.floor(mins / 60)} hr ${mins % 60} min`;
+  };
+
+  /* ───────── Location ───────── */
+  const getLoc = useCallback(async () => {
+    setGettingLoc(true);
+    try {
+      if (BluetoothModule?.getFreshLocation) {
+        try {
+          const loc = await Promise.race([
+            BluetoothModule.getFreshLocation(),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000)),
+          ]);
+          if (validLL(loc?.latitude, loc?.longitude)) {
+            return { latitude: loc.latitude, longitude: loc.longitude, source: 'GPS' };
+          }
+        } catch (e) {
+          console.log('[LOC] GPS failed:', e.message);
+        }
+      }
+
+      try {
+        const controller = new AbortController();
+        const t = setTimeout(() => controller.abort(), 5000);
+        const res = await fetch('https://ipapi.co/json/', { signal: controller.signal });
+        clearTimeout(t);
+        const d = await res.json();
+        if (validLL(d?.latitude, d?.longitude)) {
+          return { latitude: d.latitude, longitude: d.longitude, source: 'IP' };
+        }
+      } catch (e) {
+        console.log('[LOC] IP failed:', e.message);
+      }
+
+      return { ...DEFAULT_LOC, source: 'Default' };
+    } finally {
+      setGettingLoc(false);
+    }
   }, []);
 
-  // ─── Pulse animation ──────────────────────────────────────
-  useEffect(() => {
-    let animation;
-    if (isConnected) {
-      animation = Animated.loop(
-        Animated.sequence([
-          Animated.timing(pulseAnim, {
-            toValue: 1.3,
-            duration: 1000,
-            useNativeDriver: true,
-          }),
-          Animated.timing(pulseAnim, {
-            toValue: 1,
-            duration: 1000,
-            useNativeDriver: true,
-          }),
-        ]),
-      );
-      animation.start();
-    } else {
-      pulseAnim.setValue(1);
+  /* ───────── Storage ───────── */
+  const saveMySpot = useCallback(async (spot) => {
+    await AsyncStorage.setItem(STORAGE_KEYS.MY_SPOT, JSON.stringify(spot));
+    setMySpot(spot);
+  }, []);
+
+  const loadSpots = useCallback(async (location) => {
+    const mySpotStr = await AsyncStorage.getItem(STORAGE_KEYS.MY_SPOT);
+    let savedMySpot = null;
+    if (mySpotStr) {
+      try { savedMySpot = JSON.parse(mySpotStr); } catch {}
     }
-    return () => animation && animation.stop();
-  }, [isConnected, pulseAnim]);
+    setMySpot(savedMySpot);
 
-  // ─── INIT ─────────────────────────────────────────────────
-  const init = async () => {
-    try {
-      await requestLocationPermission();
-      await loadSavedData();
-      await startBluetoothListening();
-      await initActivityRecognition();
-    } catch (e) {
-      err('init error =>', e);
-    } finally {
-      setBootLoading(false);
-    }
-  };
+    const demoSpots = generateDemoSpots(location.latitude, location.longitude);
+    let combined = [...demoSpots];
+    if (savedMySpot) combined.push({ ...savedMySpot, isMySpot: true });
 
-  // ─── ACTIVITY RECOGNITION ─────────────────────────────────
-  const requestArPermission = async () => {
-    if (Platform.OS !== 'android') {
-      setArPermission(true);
-      return true;
-    }
+    combined = combined.map((spot) => ({
+      ...spot,
+      distance: calcDistance(location.latitude, location.longitude, spot.latitude, spot.longitude),
+    }));
 
-    try {
-      log('Requesting ACTIVITY_RECOGNITION permission...');
+    combined.sort((a, b) => a.distance - b.distance);
+    setAllSpots(combined);
+  }, []);
 
-      const ar = await PermissionsAndroid.request(
-        PermissionsAndroid.PERMISSIONS.ACTIVITY_RECOGNITION,
-        {
-          title: 'Activity Permission',
-          message: 'App needs activity recognition to detect still / walk / run / vehicle.',
-          buttonPositive: 'Allow',
-          buttonNegative: 'Deny',
-        },
-      );
+  /* ───────── Stats ───────── */
+  const updateRouteStats = useCallback(() => {
+    const stats = RoutingService.getStats();
+    setRouteStats(stats);
+  }, []);
 
-      log('ACTIVITY_RECOGNITION result:', ar);
-
-      if (Platform.Version >= 33) {
-        log('Requesting POST_NOTIFICATIONS (Android 13+)');
-        await PermissionsAndroid.request(
-          PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
-        );
-      }
-
-      const ok = ar === PermissionsAndroid.RESULTS.GRANTED;
-      setArPermission(ok);
-      return ok;
-    } catch (e) {
-      err('requestArPermission error =>', e);
-      setArPermission(false);
-      return false;
-    }
-  };
-
-  const readLastAr = async () => {
-    try {
-      if (!ActivityRecognitionModule?.getLast) {
-        warn('getLast() not available');
-        return;
-      }
-
-      const last = await ActivityRecognitionModule.getLast();
-      log('📖 getLast() =>', JSON.stringify(last));
-
-      if (last) {
-        setArState(last.state || 'unknown');
-        setArConfidence(Number(last.confidence ?? 0));
-        setArUpdatedAt(Number(last.timestamp ?? 0));
-        setArEnabled(Boolean(last.enabled));
-      }
-    } catch (e) {
-      err('readLastAr error =>', e);
-    }
-  };
-
-  const startAr = async () => {
-    try {
-      if (!ActivityRecognitionModule?.start) {
-        Alert.alert('Missing', 'ActivityRecognitionModule.start not found.');
-        return;
-      }
-
-      let permOk = arPermission;
-      if (!permOk) {
-        permOk = await requestArPermission();
-        if (!permOk) {
-          Alert.alert('Permission Denied', 'Activity recognition permission not granted.');
-          return;
-        }
-      }
-
-      log('Calling ActivityRecognitionModule.start(5000)...');
-      const res = await ActivityRecognitionModule.start(5000);
-      log('start() result =>', res);
-
-      setArEnabled(true);
-      setTimeout(() => readLastAr(), 3000);
-    } catch (e) {
-      err('startAr error =>', e);
-      Alert.alert('AR Start Error', String(e?.message || e));
-    }
-  };
-
-  const stopAr = async () => {
-    try {
-      if (!ActivityRecognitionModule?.stop) return;
-
-      log('Calling ActivityRecognitionModule.stop()...');
-      const res = await ActivityRecognitionModule.stop();
-      log('stop() result =>', res);
-
-      setArEnabled(false);
-      await readLastAr();
-    } catch (e) {
-      err('stopAr error =>', e);
-    }
-  };
-
-  const initActivityRecognition = async () => {
-    if (!ActivityRecognitionModule) {
-      err('❌ ActivityRecognitionModule is NULL');
-      return;
-    }
-
-    // Subscribe to events
-    if (!arSubRef.current) {
-      log('📡 Subscribing DeviceEventEmitter: ActivityRecognition');
-      arSubRef.current = DeviceEventEmitter.addListener(
-        'ActivityRecognition',
-        event => {
-          log('🎯 AR EVENT =>', JSON.stringify(event));
-
-          if (event?.state) {
-            setArState(event.state);
-            setArConfidence(Number(event.confidence ?? 0));
-            setArUpdatedAt(Number(event.timestamp ?? Date.now()));
-          }
-        },
-      );
-    }
-
-    await readLastAr();
-
-    const permOk = await requestArPermission();
-    if (!permOk) {
-      warn('AR permission not granted');
-      return;
-    }
-
-    try {
-      log('Starting AR service (5000ms)...');
-      await ActivityRecognitionModule.start(5000);
-      setArEnabled(true);
-      setTimeout(() => readLastAr(), 3000);
-    } catch (e) {
-      err('AR auto-start failed =>', e);
-    }
-
-    // Polling every 10s
-    if (!arPollRef.current) {
-      arPollRef.current = setInterval(() => {
-        readLastAr();
-      }, 10000);
-    }
-  };
-
-  // ─── PERMISSIONS ──────────────────────────────────────────
-  const requestLocationPermission = async () => {
-    if (Platform.OS !== 'android') return true;
-
-    try {
-      const granted = await PermissionsAndroid.request(
-        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-        {
-          title: 'Location Permission',
-          message: 'ParkIt needs location to save your parking spot',
-          buttonPositive: 'Allow',
-        },
-      );
-
-      const ok = granted === PermissionsAndroid.RESULTS.GRANTED;
-      setLocationStatus(ok ? 'Permission ✅' : 'Permission ❌');
-      return ok;
-    } catch (e) {
-      setLocationStatus('Permission error');
-      return false;
-    }
-  };
-
-  // ─── STORAGE ──────────────────────────────────────────────
-  const loadSavedData = async () => {
-    try {
-      const [d, h, parked, driving] = await Promise.all([
-        AsyncStorage.getItem('selectedDevice'),
-        AsyncStorage.getItem('history'),
-        AsyncStorage.getItem('parkedLoc'),
-        AsyncStorage.getItem('drivingLoc'),
-      ]);
-
-      if (d) setSelectedDevice(JSON.parse(d));
-      if (h) setConnectionHistory(JSON.parse(h));
-      if (parked) setParkedLocation(JSON.parse(parked));
-      if (driving) setDrivingLocation(JSON.parse(driving));
-    } catch (e) {
-      err('loadSavedData error =>', e);
-    }
-  };
-
-  const saveHistory = async newHistory => {
-    try {
-      await AsyncStorage.setItem('history', JSON.stringify(newHistory));
-    } catch (e) {}
-  };
-
-  const saveParkedLoc = async loc => {
-    try {
-      await AsyncStorage.setItem('parkedLoc', JSON.stringify(loc));
-    } catch (e) {}
-  };
-
-  const saveDrivingLoc = async loc => {
-    try {
-      await AsyncStorage.setItem('drivingLoc', JSON.stringify(loc));
-    } catch (e) {}
-  };
-
-  // ─── LOCATION ─────────────────────────────────────────────
-  const getIPLocation = async () => {
-    try {
-      const response = await fetch('http://ip-api.com/json/');
-      const data = await response.json();
-      if (data?.status === 'success') {
-        return {
-          latitude: data.lat,
-          longitude: data.lon,
-          city: data.city || 'Unknown',
-          source: 'IP (Approx)',
-          accuracy: 5000,
-          time: Date.now(),
-        };
-      }
-    } catch (e) {
-      err('getIPLocation error =>', e);
-    }
-    return null;
-  };
-
-  const getNativeLocation = async (fresh = false) => {
-    try {
-      if (!BluetoothModule) return null;
-
-      if (fresh && BluetoothModule?.getFreshLocation) {
-        const f = await BluetoothModule.getFreshLocation();
-        const lat = toNum(f?.latitude);
-        const lng = toNum(f?.longitude);
-        if (isValidLatLng(lat, lng)) {
-          return {...f, latitude: lat, longitude: lng};
-        }
-      }
-
-      if (BluetoothModule?.getCurrentLocation) {
-        const c = await BluetoothModule.getCurrentLocation();
-        const lat = toNum(c?.latitude);
-        const lng = toNum(c?.longitude);
-        if (isValidLatLng(lat, lng)) {
-          return {...c, latitude: lat, longitude: lng};
-        }
-      }
-
-      return null;
-    } catch (e) {
-      err('getNativeLocation error =>', e);
-      return null;
-    }
-  };
-
-  const getLocation = async ({fresh = false} = {}) => {
-    setIsGettingLocation(true);
-    setLocationStatus(fresh ? 'Getting LIVE GPS...' : 'Getting GPS...');
-
-    try {
-      const nativeLoc = await getNativeLocation(fresh);
-
-      if (nativeLoc?.latitude && nativeLoc?.longitude) {
-        setLocationStatus(`GPS ✅`);
-        return {
-          latitude: nativeLoc.latitude,
-          longitude: nativeLoc.longitude,
-          accuracy: nativeLoc.accuracy,
-          time: nativeLoc.time,
-          source: 'GPS',
-        };
-      }
-
-      const ipLoc = await getIPLocation();
-      if (ipLoc) {
-        setLocationStatus(ipLoc.city || 'IP ✅');
-        return ipLoc;
-      }
-
-      setLocationStatus('Default');
-      return {
-        latitude: 23.2599,
-        longitude: 77.4126,
-        city: 'Bhopal',
-        source: 'Default',
-        accuracy: 99999,
-        time: Date.now(),
-      };
-    } finally {
-      setIsGettingLocation(false);
-    }
-  };
-
-  const openMaps = loc => {
-    const lat = toNum(loc?.latitude);
-    const lng = toNum(loc?.longitude);
-    if (!isValidLatLng(lat, lng)) return;
-    const url = `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
-    Linking.openURL(url).catch(() => {});
-  };
-
-  // ─── BLUETOOTH ────────────────────────────────────────────
-  const shouldHandleEventForSelected = device => {
-    const selected = selectedDeviceRef.current;
-    if (!selected) return true;
-    if (device?.address) return device.address === selected.address;
-    return lastConnectedRef.current?.address === selected.address;
-  };
-
-  const getNiceDeviceName = device => {
-    const nameFromEvent = device?.name || device?.namme;
-    if (nameFromEvent && nameFromEvent !== 'Unknown Device') return nameFromEvent;
-    return (
-      connectedDeviceRef.current?.name ||
-      lastConnectedRef.current?.name ||
-      selectedDeviceRef.current?.name ||
-      'Unknown Device'
+  const showRouteStats = useCallback(() => {
+    const stats = RoutingService.getStats();
+    Alert.alert(
+      '📊 Backend Stats (No Cache)',
+      `🌐 Backend: ${BACKEND_CONFIG.baseUrl.split('//')[1].substring(0, 30)}...\n\n` +
+      `📡 Total Requests: ${stats.totalRequests}\n` +
+      `✅ Successful: ${stats.successfulRequests}\n` +
+      `❌ Failed: ${stats.failedRequests}\n` +
+      `💬 Last Message: ${stats.lastMessage || 'N/A'}\n\n` +
+      `⚡ Cache: DISABLED (Always fresh)`,
+      [{ text: 'OK' }]
     );
-  };
+  }, []);
 
-  const startBluetoothListening = async () => {
-    setIsBtSyncing(true);
+  /* ───────── Init ───────── */
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      const loc = await getLoc();
+      if (!mounted) return;
+      setUserLoc(loc);
+      await loadSpots(loc);
+      setLoading(false);
+
+      setTimeout(() => {
+        webRef.current?.injectJavaScript(`
+          window.setUserLocation && window.setUserLocation(${loc.latitude}, ${loc.longitude}, true);
+          true;
+        `);
+      }, 500);
+    })();
+    return () => { mounted = false; };
+  }, [getLoc, loadSpots]);
+
+  /* ───────── Map HTML ───────── */
+  const mapHtml = useMemo(() => {
+    const lat = userLoc.latitude;
+    const lng = userLoc.longitude;
+
+    const spotsMarkersJS = allSpots.map((spot) => {
+      const color = spot.isMySpot ? '#1976D2' : spot.isOccupied ? '#E53935' : '#4CAF50';
+      const icon = spot.isMySpot ? '🚗' : spot.isOccupied ? '🅿️' : '✓';
+
+      return `
+        (function() {
+          var spotData = {
+            id: "${spot.id}",
+            latitude: ${spot.latitude},
+            longitude: ${spot.longitude},
+            isOccupied: ${spot.isOccupied ? 'true' : 'false'},
+            isMySpot: ${spot.isMySpot ? 'true' : 'false'},
+            deviceName: "${spot.deviceName || 'Unknown'}",
+            userId: "${spot.userId || ''}",
+            createdAt: ${spot.createdAt || Date.now()},
+            distance: ${spot.distance || 0}
+          };
+          
+          var markerIcon = L.divIcon({
+            className: 'custom-marker',
+            html: '<div style="width:40px;height:48px;background:${color};border-radius:50% 50% 50% 50%/60% 60% 40% 40%;border:3px solid #fff;box-shadow:0 4px 15px rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px;padding-bottom:6px;cursor:pointer;">${icon}</div>',
+            iconSize: [40, 48],
+            iconAnchor: [20, 48]
+          });
+
+          var marker = L.marker([${spot.latitude}, ${spot.longitude}], {icon: markerIcon}).addTo(map);
+          ${spot.isMySpot ? `mySpotMarker = marker; mySpotLatLng = [${spot.latitude}, ${spot.longitude}];` : ''}
+
+          marker.on('click', function(e) {
+            window.ReactNativeWebView.postMessage(JSON.stringify({
+              type: 'spotClick',
+              spot: spotData
+            }));
+          });
+        })();
+      `;
+    }).join('\n');
+
+    return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; width: 100%; overflow: hidden; }
+    #map { height: 100%; width: 100%; background: #E8E8E8; }
+    .leaflet-control-attribution { background: rgba(255,255,255,0.8) !important; font-size: 10px !important; }
+    .custom-marker { cursor: pointer !important; }
+    #loading-overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(255,255,255,0.95); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 9999; }
+    #loading-overlay.hidden { display: none; }
+    .loader { width: 50px; height: 50px; border: 4px solid #f3f3f3; border-top: 4px solid #E53935; border-radius: 50%; animation: spin 1s linear infinite; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div id="loading-overlay"><div class="loader"></div></div>
+  <div id="map"></div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    function hideLoading() { document.getElementById('loading-overlay').classList.add('hidden'); }
+
+    var map = L.map('map', { zoomControl: false, attributionControl: true }).setView([${lat}, ${lng}], 16);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+
+    var userLat = ${lat}, userLng = ${lng};
+    var userMarker = null, mySpotMarker = null, mySpotLatLng = null;
+    var routeLine = null, routeBorder = null, searchMarker = null;
+
+    var userIcon = L.divIcon({
+      className: '',
+      html: '<div style="width:22px;height:22px;border-radius:50%;background:linear-gradient(135deg,#E53935,#C62828);border:4px solid #fff;box-shadow:0 2px 10px rgba(229,57,53,0.4),0 0 0 8px rgba(229,57,53,0.15);"></div>',
+      iconSize: [22, 22], iconAnchor: [11, 11]
+    });
+    userMarker = L.marker([userLat, userLng], {icon: userIcon, zIndexOffset: 1000}).addTo(map);
+
+    ${spotsMarkersJS}
+
+    window.setUserLocation = function(lat, lng, moveCamera) {
+      userLat = lat; userLng = lng;
+      if (userMarker) userMarker.setLatLng([lat, lng]);
+      if (moveCamera) map.flyTo([lat, lng], 16, { duration: 0.8 });
+    };
+
+    window.zoomIn = function() { map.zoomIn(); };
+    window.zoomOut = function() { map.zoomOut(); };
+
+    window.panTo = function(lat, lng, zoom) {
+      if (searchMarker) { map.removeLayer(searchMarker); searchMarker = null; }
+      map.flyTo([lat, lng], zoom || 16, { duration: 0.8 });
+      var pin = L.divIcon({ className: '', html: '<div style="width:18px;height:18px;border-radius:50%;background:#111;border:3px solid #fff;"></div>', iconSize: [18, 18], iconAnchor: [9, 9] });
+      searchMarker = L.marker([lat, lng], {icon: pin}).addTo(map);
+    };
+
+    window.clearRoute = function() {
+      if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+      if (routeBorder) { map.removeLayer(routeBorder); routeBorder = null; }
+    };
+
+    window.setMySpot = function(lat, lng) {
+      mySpotLatLng = [lat, lng];
+      if (mySpotMarker) { map.removeLayer(mySpotMarker); mySpotMarker = null; }
+      var spotIcon = L.divIcon({ className: '', html: '<div style="width:40px;height:48px;background:#1976D2;border-radius:50% 50% 50% 50%/60% 60% 40% 40%;border:3px solid #fff;box-shadow:0 4px 15px rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px;">🚗</div>', iconSize: [40, 48], iconAnchor: [20, 48] });
+      mySpotMarker = L.marker([lat, lng], {icon: spotIcon}).addTo(map);
+    };
+
+    window.showRoute = function(destLat, destLng) {
+      window.clearRoute();
+      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'fetchRoute', startLat: userLat, startLng: userLng, destLat: destLat, destLng: destLng }));
+    };
+
+    window.handleRouteData = function(data) {
+      if (!data || !data.coordinates) return;
+      var latlngs = data.coordinates.map(function(c) { return [c[1], c[0]]; });
+      routeBorder = L.polyline(latlngs, { color: '#fff', weight: 10, opacity: 0.6 }).addTo(map);
+      routeLine = L.polyline(latlngs, { color: '#E53935', weight: 6, opacity: 0.9 }).addTo(map);
+      map.fitBounds(routeLine.getBounds(), { padding: [60, 60], maxZoom: 17 });
+    };
+
+    map.whenReady(function() { setTimeout(function() { hideLoading(); window.ReactNativeWebView.postMessage(JSON.stringify({type: 'ready'})); }, 500); });
+  </script>
+</body>
+</html>`;
+  }, [userLoc, allSpots]);
+
+  /* ───────── Process Navigation ───────── */
+  const processNavigationSteps = useCallback((routeData) => {
     try {
-      const enabled = await BluetoothService.isBluetoothEnabled();
-      setBluetoothEnabled(enabled);
+      const route = routeData.routes[0];
+      const steps = [];
+      let n = 1;
 
-      if (!enabled) return;
+      // If backend provides steps in legs
+      if (route.legs && route.legs.length > 0) {
+        route.legs.forEach((leg) => {
+          if (leg.steps && leg.steps.length > 0) {
+            leg.steps.forEach((step) => {
+              const m = step.maneuver || {};
+              steps.push({
+                id: String(n),
+                stepNumber: n,
+                icon: getManeuverIcon(m.type, m.modifier),
+                instruction: getManeuverInstruction(m.type, m.modifier, sanitizeStreetName(step.name), step.distance),
+                distance: step.distance,
+                duration: step.duration,
+                streetName: sanitizeStreetName(step.name),
+                maneuverType: m.type,
+              });
+              n++;
+            });
+          }
+        });
+      }
 
-      const devices = await BluetoothService.getPairedDevices();
-      setPairedDevices(devices);
+      // If no steps, create basic start/end steps
+      if (steps.length === 0) {
+        steps.push({
+          id: '1',
+          stepNumber: 1,
+          icon: '🚀',
+          instruction: 'Start your journey',
+          distance: route.distance || 0,
+          duration: route.duration || 0,
+          streetName: '',
+          maneuverType: 'depart',
+        });
+        steps.push({
+          id: '2',
+          stepNumber: 2,
+          icon: '🎯',
+          instruction: 'You have arrived at your destination',
+          distance: 0,
+          duration: 0,
+          streetName: '',
+          maneuverType: 'arrive',
+        });
+      }
 
-      await BluetoothService.stopListening();
-      await BluetoothService.startListening({
-        onConnect: onDeviceConnect,
-        onDisconnect: onDeviceDisconnect,
-        onStateChange: s => setBluetoothEnabled(!!s.enabled),
+      setNavigationSteps(steps);
+      setRouteInfo({ 
+        totalDistance: route.distance, 
+        totalDuration: route.duration, 
+        stepsCount: steps.length 
       });
     } catch (e) {
-      err('startBluetoothListening error =>', e);
-    } finally {
-      setIsBtSyncing(false);
+      console.log('[NAV] Process steps error:', e.message);
+      setNavigationSteps([]);
+      setRouteInfo(null);
     }
-  };
+  }, []);
 
-  const onDeviceConnect = async device => {
-    log('onDeviceConnect =>', device);
-
-    if (!shouldHandleEventForSelected(device)) return;
-
-    lastConnectedRef.current = {
-      address: device?.address || null,
-      name: device?.name || null,
-    };
-
-    const now = new Date();
-    const loc = await getLocation({fresh: true});
-
-    setDrivingLocation(loc);
-    saveDrivingLoc(loc);
-    setIsConnected(true);
-    setConnectedDevice(device);
-    setConnectionTime(now.toLocaleTimeString());
-
-    const entry = {
-      type: 'connect',
-      device: device?.name || 'Unknown Device',
-      time: now.toLocaleTimeString(),
-      date: now.toLocaleDateString(),
-      location: loc,
-      activity: arState,
-    };
-
-    setConnectionHistory(prev => {
-      const newHistory = [entry, ...prev.slice(0, 29)];
-      saveHistory(newHistory);
-      return newHistory;
-    });
-  };
-
-  const onDeviceDisconnect = async device => {
-    log('onDeviceDisconnect =>', device);
-
-    if (!shouldHandleEventForSelected(device)) return;
-
-    const now = new Date();
-    const loc = await getLocation({fresh: true});
-
-    setIsConnected(false);
-    setConnectionTime(now.toLocaleTimeString());
-    setParkedLocation(loc);
-    await saveParkedLoc(loc);
-
-    const startLoc = drivingLocationRef.current;
-    const dist = distanceMeters(startLoc, loc);
-
-    const entry = {
-      type: 'disconnect',
-      device: getNiceDeviceName(device),
-      time: now.toLocaleTimeString(),
-      date: now.toLocaleDateString(),
-      location: loc,
-      distanceMeters: dist,
-      activity: arState,
-    };
-
-    setConnectionHistory(prev => {
-      const newHistory = [entry, ...prev.slice(0, 29)];
-      saveHistory(newHistory);
-      return newHistory;
-    });
-  };
-
-  // ─── UI ACTIONS ───────────────────────────────────────────
-  const testLocation = async () => {
+  /* ───────── WebView Message Handler ───────── */
+  const onWebMessage = useCallback(async (event) => {
     try {
-      const loc = await getLocation({fresh: true});
-      Alert.alert(
-        '📍 GPS Location',
-        `Lat/Lng: ${formatLatLng6(loc)}\nAccuracy: ${
-          loc.accuracy ? Math.round(loc.accuracy) + 'm' : 'N/A'
-        }\nSource: ${loc.source || 'N/A'}`,
-        [{text: 'OK'}, {text: 'Open Maps', onPress: () => openMaps(loc)}],
-      );
+      const data = JSON.parse(event.nativeEvent.data);
+
+      if (data.type === 'ready') return;
+
+      if (data.type === 'spotClick') {
+        setSelectedSpot(data.spot);
+        setShowModal(true);
+        return;
+      }
+
+      if (data.type === 'fetchRoute') {
+        setRouteLoading(true);
+        const startTime = Date.now();
+
+        try {
+          console.log('[ROUTE] Fetching from backend (NO CACHE)...');
+          const routeData = await RoutingService.fetchRoute(
+            data.startLat, 
+            data.startLng, 
+            data.destLat, 
+            data.destLng
+          );
+
+          const responseTime = Date.now() - startTime;
+          console.log(`[ROUTE] Success in ${responseTime}ms`);
+
+          processNavigationSteps(routeData);
+          updateRouteStats();
+
+          const route = routeData.routes[0];
+          webRef.current?.injectJavaScript(`
+            window.handleRouteData({
+              coordinates: ${JSON.stringify(route.geometry.coordinates)}
+            });
+            true;
+          `);
+
+          // Show success message from backend
+          const successMessage = routeData.backendMessage || 'Route fetched successfully';
+          Alert.alert(
+            '✅ Route Success',
+            `${successMessage}\n\n` +
+            `📍 Distance: ${formatDistance(route.distance)}\n` +
+            `⏱️ Duration: ${formatDuration(route.duration)}\n` +
+            `📊 Response Time: ${responseTime}ms\n\n` +
+            `🔥 Fresh from backend (No Cache)`,
+            [{ text: 'OK' }]
+          );
+
+        } catch (error) {
+          console.log('[ROUTE] Error:', error.message);
+          updateRouteStats();
+
+          // Show error message from backend
+          Alert.alert(
+            '❌ Backend Error',
+            `Could not fetch route from backend.\n\n` +
+            `📛 Error: ${error.message}\n\n` +
+            `🔄 Showing straight line as fallback.`,
+            [{ text: 'OK' }]
+          );
+
+          // Fallback: straight line
+          webRef.current?.injectJavaScript(`
+            window.handleRouteData({
+              coordinates: [[${data.startLng}, ${data.startLat}], [${data.destLng}, ${data.destLat}]]
+            });
+            true;
+          `);
+
+          // Create basic route info
+          const distance = calcDistance(data.startLat, data.startLng, data.destLat, data.destLng);
+          setRouteInfo({
+            totalDistance: distance,
+            totalDuration: distance / 13.89, // Assume 50 km/h average
+            stepsCount: 2,
+          });
+        } finally {
+          setRouteLoading(false);
+        }
+      }
     } catch (e) {
-      Alert.alert('Error', 'Could not get location');
+      console.log('[MAP] Parse error:', e.message);
     }
-  };
+  }, [processNavigationSteps, updateRouteStats, calcDistance]);
 
-  const selectDevice = async device => {
-    setSelectedDevice(device);
-    setShowDeviceModal(false);
+  /* ───────── Actions ───────── */
+  const handleOccupy = useCallback(async () => {
+    setGettingLoc(true);
     try {
-      await AsyncStorage.setItem('selectedDevice', JSON.stringify(device));
-    } catch (e) {}
-    Alert.alert('✅ Selected', device?.name || 'Device');
-  };
+      const loc = await getLoc();
+      if (!loc) return Alert.alert('Error', 'Could not get location');
 
-  const clearDevice = async () => {
-    Alert.alert('Remove Device?', 'Selected device ko remove karein?', [
-      {text: 'No'},
-      {
-        text: 'Yes',
-        onPress: async () => {
-          setSelectedDevice(null);
-          setIsConnected(false);
-          try {
-            await AsyncStorage.removeItem('selectedDevice');
-          } catch (e) {}
-        },
-      },
-    ]);
-  };
+      const newSpot = { 
+        id: `my_${Date.now()}`, 
+        latitude: loc.latitude, 
+        longitude: loc.longitude, 
+        isOccupied: true, 
+        isMySpot: true, 
+        deviceName: 'My Car', 
+        userId: 'me', 
+        createdAt: Date.now() 
+      };
+      await saveMySpot(newSpot);
+      setUserLoc(loc);
+      await loadSpots(loc);
 
-  const clearHistory = () => {
-    Alert.alert('Clear All?', 'Puri history delete ho jayegi.', [
-      {text: 'No'},
-      {
-        text: 'Yes',
-        style: 'destructive',
-        onPress: async () => {
-          setConnectionHistory([]);
-          setParkedLocation(null);
-          setDrivingLocation(null);
-          try {
-            await AsyncStorage.multiRemove(['history', 'parkedLoc', 'drivingLoc']);
-          } catch (e) {}
-        },
-      },
-    ]);
-  };
-
-  // ─── DERIVED VALUES ───────────────────────────────────────
-  const lastDistance =
-    !isConnected && parkedLocation && drivingLocation
-      ? distanceMeters(drivingLocation, parkedLocation)
-      : null;
-
-  const arModuleAvailable = !!ActivityRecognitionModule;
-
-  const arBadgeText = arModuleAvailable
-    ? arEnabled
-      ? `${activityIcon(arState)} ${niceActivityLabel(arState)}`
-      : 'AR OFF'
-    : 'AR N/A';
-
-  const arCardColor = () => {
-    switch (arState) {
-      case 'in_vehicle':
-        return '#1565C0';
-      case 'walking':
-        return '#2E7D32';
-      case 'running':
-        return '#E65100';
-      case 'on_bicycle':
-        return '#6A1B9A';
-      case 'still':
-        return '#37474F';
-      default:
-        return '#455A64';
+      webRef.current?.injectJavaScript(`
+        window.setUserLocation(${loc.latitude}, ${loc.longitude}, true); 
+        window.setMySpot(${loc.latitude}, ${loc.longitude}); 
+        true;
+      `);
+      Alert.alert('✅ Done', 'Parking spot occupied!');
+    } finally {
+      setGettingLoc(false);
     }
-  };
+  }, [getLoc, loadSpots, saveMySpot]);
 
-  // ─── LOADING SCREEN ───────────────────────────────────────
-  if (bootLoading) {
+  const handleVacate = useCallback(async () => {
+    if (!mySpot) return Alert.alert('No Spot', 'Nothing to vacate');
+    Alert.alert('Vacate?', 'Mark your spot as available?', [
+      { text: 'Cancel', style: 'cancel' },
+      { 
+        text: 'Vacate', 
+        style: 'destructive', 
+        onPress: async () => {
+          await saveMySpot({ ...mySpot, isOccupied: false });
+          await loadSpots(userLoc);
+          Alert.alert('✅ Done', 'Spot vacated!');
+        }
+      },
+    ]);
+  }, [loadSpots, mySpot, saveMySpot, userLoc]);
+
+  const onLocate = useCallback(async () => {
+    const loc = await getLoc();
+    if (!loc) return;
+    setUserLoc(loc);
+    await loadSpots(loc);
+    webRef.current?.injectJavaScript(`
+      window.setUserLocation(${loc.latitude}, ${loc.longitude}, true); 
+      true;
+    `);
+  }, [getLoc, loadSpots]);
+
+  const onShowRoute = useCallback((spot) => {
+    setShowModal(false);
+    webRef.current?.injectJavaScript(`
+      window.showRoute(${spot.latitude}, ${spot.longitude}); 
+      true;
+    `);
+  }, []);
+
+  const onShowNavigation = useCallback((spot) => {
+    setShowModal(false);
+    setShowNavigation(true);
+    webRef.current?.injectJavaScript(`
+      window.showRoute(${spot.latitude}, ${spot.longitude}); 
+      true;
+    `);
+  }, []);
+
+  const onNavigate = useCallback((spot) => {
+    Linking.openURL(
+      `https://www.google.com/maps/dir/?api=1&origin=${userLoc.latitude},${userLoc.longitude}&destination=${spot.latitude},${spot.longitude}&travelmode=driving`
+    );
+  }, [userLoc]);
+
+  const onFindParking = useCallback(() => {
+    const nearest = allSpots.find((s) => !s.isOccupied && !s.isMySpot);
+    if (!nearest) return Alert.alert('😕 No Parking', 'No available spots nearby');
+    webRef.current?.injectJavaScript(`
+      window.panTo(${nearest.latitude}, ${nearest.longitude}, 17); 
+      true;
+    `);
+    setSelectedSpot(nearest);
+    setShowModal(true);
+  }, [allSpots]);
+
+  const zoomIn = useCallback(() => { 
+    webRef.current?.injectJavaScript(`window.zoomIn(); true;`); 
+  }, []);
+
+  const zoomOut = useCallback(() => { 
+    webRef.current?.injectJavaScript(`window.zoomOut(); true;`); 
+  }, []);
+
+  const clearRoute = useCallback(() => { 
+    setRouteInfo(null); 
+    setNavigationSteps([]); 
+    webRef.current?.injectJavaScript(`window.clearRoute(); true;`); 
+  }, []);
+
+  const runSearch = useCallback(async () => {
+    const q = searchQuery.trim();
+    if (!q) return;
+    Keyboard.dismiss();
+    setSearching(true);
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`
+      );
+      const results = await res.json();
+      if (!results?.length) return Alert.alert('Not found', 'No results for your search');
+      webRef.current?.injectJavaScript(`
+        window.panTo(${results[0].lat}, ${results[0].lon}, 16); 
+        true;
+      `);
+    } catch { 
+      Alert.alert('Error', 'Search failed'); 
+    } finally { 
+      setSearching(false); 
+    }
+  }, [searchQuery]);
+
+  const renderStep = ({ item, index }) => (
+    <View style={S.navStep}>
+      <View style={S.navStepLeft}>
+        <View style={[
+          S.navIconContainer, 
+          item.maneuverType === 'arrive' && { backgroundColor: '#4CAF50' }
+        ]}>
+          <Text style={S.navIcon}>{item.icon}</Text>
+        </View>
+        {index < navigationSteps.length - 1 && <View style={S.navConnector} />}
+      </View>
+      <View style={S.navStepRight}>
+        <View style={S.navStepHeader}>
+          <Text style={S.navStepNumber}>Step {item.stepNumber}</Text>
+          <Text style={S.navStepDistance}>{formatDistance(item.distance)}</Text>
+        </View>
+        <Text style={S.navStepInstruction}>{item.instruction}</Text>
+        <Text style={S.navStepDuration}>⏱️ ~{formatDuration(item.duration)}</Text>
+      </View>
+    </View>
+  );
+
+  if (loading) {
     return (
-      <SafeAreaView style={styles.loading}>
-        <ActivityIndicator size="large" color="#FFF" />
-        <Text style={styles.loadingText}>Starting ParkIt...</Text>
+      <SafeAreaView style={S.loading}>
+        <ActivityIndicator size="large" color="#E53935" />
+        <Text style={S.loadingTitle}>Loading Map...</Text>
+        <Text style={S.loadingSubtitle}>Connecting to backend (No Cache)...</Text>
       </SafeAreaView>
     );
   }
 
-  // ─── MAIN RENDER ──────────────────────────────────────────
   return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar
-        barStyle="light-content"
-        backgroundColor={isConnected ? '#2E7D32' : '#D84315'}
-      />
+    <SafeAreaView style={S.safe} edges={['top', 'bottom']}>
+      <View style={S.container}>
+        <WebView 
+          ref={webRef} 
+          source={{ html: mapHtml }} 
+          style={StyleSheet.absoluteFill} 
+          javaScriptEnabled 
+          domStorageEnabled 
+          originWhitelist={['*']} 
+          onMessage={onWebMessage} 
+          scrollEnabled={false} 
+        />
 
-      {/* ── Header ── */}
-      <View
-        style={[
-          styles.header,
-          {backgroundColor: isConnected ? '#2E7D32' : '#D84315'},
-        ]}>
-        <Text style={styles.title}>🅿 ParkIt</Text>
-        <Text style={styles.subtitle}>Smart Parking Detection</Text>
-
-        <View style={styles.badges}>
-          <View style={styles.badge}>
-            <Text style={styles.badgeText}>
-              {bluetoothEnabled ? '🔵 BT ON' : '⚫ BT OFF'}
-            </Text>
-          </View>
-
-          <View style={styles.badge}>
-            <Text style={styles.badgeText}>
-              {isGettingLocation ? '📡 GPS...' : locationStatus}
-            </Text>
-          </View>
-
-          <View style={[styles.badge, !arModuleAvailable && styles.badgeWarning]}>
-            <Text style={styles.badgeText}>{arBadgeText}</Text>
-          </View>
-
-          {isBtSyncing && (
-            <View style={styles.badge}>
-              <Text style={styles.badgeText}>⏳ Syncing...</Text>
-            </View>
-          )}
-        </View>
-      </View>
-
-      <ScrollView style={styles.scroll} showsVerticalScrollIndicator={false}>
-        {/* ── Activity Recognition Card ── */}
-        <View style={[styles.card, styles.arCard]}>
-          <View style={styles.row}>
-            <Text style={styles.cardTitle}>🏃 Activity Recognition</Text>
-            <View style={{flexDirection: 'row', gap: 8}}>
-              <TouchableOpacity
-                style={[styles.btn, {backgroundColor: '#455A64'}]}
-                onPress={readLastAr}>
-                <Text style={styles.btnText}>↻</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  styles.btn,
-                  {backgroundColor: arEnabled ? '#D32F2F' : '#1976D2'},
-                ]}
-                onPress={arEnabled ? stopAr : startAr}>
-                <Text style={styles.btnText}>{arEnabled ? '⏹' : '▶'}</Text>
-              </TouchableOpacity>
+        {routeLoading && (
+          <View style={S.routeLoadingOverlay}>
+            <View style={S.routeLoadingCard}>
+              <ActivityIndicator size="large" color="#E53935" />
+              <Text style={S.routeLoadingText}>Fetching route...</Text>
+              <Text style={S.routeLoadingSubtext}>🔥 Fresh from backend (No Cache)</Text>
             </View>
           </View>
+        )}
 
-          {/* Status */}
-          <Text style={styles.arInfoText}>
-            Permission: {arPermission ? '✅' : '❌'} | Status:{' '}
-            {arEnabled ? '🟢 ON' : '🔴 OFF'}
-          </Text>
-
-          {/* Big Activity Display */}
-          <View style={[styles.activityBig, {backgroundColor: arCardColor()}]}>
-            <Text style={styles.activityIcon}>{activityIcon(arState)}</Text>
-            <Text style={styles.activityLabel}>{niceActivityLabel(arState)}</Text>
-            <Text style={styles.activityConf}>
-              {Math.round(arConfidence)}% confidence
-            </Text>
-          </View>
-
-          {/* Last Updated */}
-          <Text style={styles.arInfoText}>
-            Last: {arUpdatedAt ? new Date(arUpdatedAt).toLocaleTimeString() : 'Never'}
-          </Text>
-        </View>
-
-        {/* ── Device Card ── */}
-        <View style={styles.card}>
-          <View style={styles.row}>
-            <Text style={styles.cardTitle}>🎧 Tracking Device</Text>
-            <TouchableOpacity
-              style={styles.btn}
-              onPress={() => {
-                startBluetoothListening();
-                setShowDeviceModal(true);
-              }}>
-              <Text style={styles.btnText}>
-                {selectedDevice ? '✏️ Change' : '+ Select'}
-              </Text>
+        <View style={[S.searchBarWrap, { top: insets.top + 12 }]}>
+          <View style={S.searchBar}>
+            <Text style={S.searchIcon}>🔍</Text>
+            <TextInput 
+              value={searchQuery} 
+              onChangeText={setSearchQuery} 
+              placeholder="Search location..." 
+              placeholderTextColor="#999" 
+              style={S.searchInput} 
+              returnKeyType="search" 
+              onSubmitEditing={runSearch} 
+            />
+            {searchQuery.length > 0 && (
+              <TouchableOpacity onPress={() => setSearchQuery('')}>
+                <Text style={S.searchClear}>✕</Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity onPress={runSearch} style={S.searchActionBtn}>
+              {searching ? (
+                <ActivityIndicator size="small" color="#E53935" />
+              ) : (
+                <Text style={S.searchAction}>→</Text>
+              )}
             </TouchableOpacity>
           </View>
-
-          {selectedDevice ? (
-            <View style={styles.deviceBox}>
-              <Text style={styles.deviceIcon}>🎧</Text>
-              <View style={{flex: 1}}>
-                <Text style={styles.deviceName}>{selectedDevice.name}</Text>
-                <Text style={styles.deviceAddr}>{selectedDevice.address}</Text>
-              </View>
-              <TouchableOpacity onPress={clearDevice}>
-                <Text style={styles.x}>✕</Text>
-              </TouchableOpacity>
-            </View>
-          ) : (
-            <Text style={styles.muted}>
-              Koi device select nahi hai.{'\n'}
-              "Select" tap karke device choose karein.
-            </Text>
-          )}
         </View>
 
-        {/* ── Status Card ── */}
-        <View
-          style={[
-            styles.statusCard,
-            {backgroundColor: isConnected ? '#43A047' : '#FF5722'},
-          ]}>
-          <Animated.View
-            style={[styles.dot, {transform: [{scale: pulseAnim}]}]}
-          />
-          <Text style={styles.statusTitle}>
-            {isConnected ? '🚗 DRIVING' : '🅿 PARKED'}
-          </Text>
-          <Text style={styles.statusSub}>
-            {isConnected
-              ? connectedDevice?.name || 'Connected'
-              : selectedDevice?.name || 'Select a device'}
-          </Text>
-
-          {connectionTime && (
-            <Text style={styles.statusTime}>⏰ {connectionTime}</Text>
-          )}
-
-          {arEnabled && arState !== 'unknown' && (
-            <View style={styles.arStatusBadge}>
-              <Text style={styles.arStatusText}>
-                {activityIcon(arState)} {niceActivityLabel(arState)}
-              </Text>
-            </View>
-          )}
-
-          {isConnected && drivingLocation && (
-            <Text style={styles.smallWhite}>
-              📍 Start: {formatLatLng6(drivingLocation)}
-            </Text>
-          )}
-
-          {!isConnected && parkedLocation && (
-            <>
-              <TouchableOpacity
-                style={styles.locBtn}
-                onPress={() => openMaps(parkedLocation)}>
-                <Text style={styles.locBtnText}>📍 View Parking Spot</Text>
-              </TouchableOpacity>
-
-              {Number.isFinite(lastDistance) && (
-                <Text style={styles.smallWhite}>
-                  📏 Distance: {Math.round(lastDistance)} m
-                </Text>
-              )}
-            </>
-          )}
-        </View>
-
-        {/* ── Parked Location Card ── */}
-        {!isConnected && parkedLocation && (
-          <View style={styles.parkedCard}>
-            <Text style={styles.parkedTitle}>🅿 Parked Location</Text>
-            <Text style={styles.parkedBig}>{formatLatLng6(parkedLocation)}</Text>
-
-            <Text style={styles.parkedSource}>
-              Source: {parkedLocation.source || 'N/A'} | Accuracy:{' '}
-              {parkedLocation.accuracy
-                ? Math.round(parkedLocation.accuracy) + 'm'
-                : 'N/A'}
-            </Text>
-
-            {Number.isFinite(lastDistance) && (
-              <Text style={styles.parkedSource}>
-                📏 Distance: {Math.round(lastDistance)} m
-              </Text>
+        <View style={[S.topPillsRow, { top: insets.top + 68 }]}>
+          <TouchableOpacity 
+            style={[S.pillBtn, mySpot?.isOccupied && S.pillDisabled]} 
+            onPress={handleOccupy} 
+            disabled={mySpot?.isOccupied || gettingLoc}
+          >
+            {gettingLoc ? (
+              <ActivityIndicator size="small" color="#E53935" />
+            ) : (
+              <>
+                <Text style={S.pillIcon}>📍</Text>
+                <Text style={S.pillText}>Occupy</Text>
+              </>
             )}
+          </TouchableOpacity>
+          <TouchableOpacity 
+            style={[S.pillBtn, !mySpot?.isOccupied && S.pillDisabled]} 
+            onPress={handleVacate} 
+            disabled={!mySpot?.isOccupied}
+          >
+            <Text style={S.pillIcon}>🚗</Text>
+            <Text style={S.pillText}>Vacate</Text>
+          </TouchableOpacity>
+        </View>
 
-            <TouchableOpacity
-              style={styles.mapsBtn}
-              onPress={() => openMaps(parkedLocation)}>
-              <Text style={styles.mapsBtnText}>🗺 Open Google Maps</Text>
+        {routeInfo && (
+          <View style={[S.routeInfoCard, { top: insets.top + 120 }]}>
+            <View style={S.routeInfoContent}>
+              <View style={S.routeInfoItem}>
+                <Text style={S.routeInfoValue}>{formatDistance(routeInfo.totalDistance)}</Text>
+                <Text style={S.routeInfoLabel}>Distance</Text>
+              </View>
+              <View style={S.routeInfoDivider} />
+              <View style={S.routeInfoItem}>
+                <Text style={S.routeInfoValue}>{formatDuration(routeInfo.totalDuration)}</Text>
+                <Text style={S.routeInfoLabel}>Duration</Text>
+              </View>
+              <View style={S.routeInfoDivider} />
+              <View style={S.routeInfoItem}>
+                <Text style={S.routeInfoValue}>🔥</Text>
+                <Text style={S.routeInfoLabel}>Fresh</Text>
+              </View>
+            </View>
+            <TouchableOpacity style={S.routeInfoClose} onPress={clearRoute}>
+              <Text style={S.routeInfoCloseText}>✕</Text>
             </TouchableOpacity>
           </View>
         )}
 
-        {/* ── Location Test Card ── */}
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>📡 Location</Text>
-          <Text style={styles.locStatus}>Status: {locationStatus}</Text>
-          <TouchableOpacity style={styles.testBtn} onPress={testLocation}>
-            <Text style={styles.testBtnText}>📍 Test GPS</Text>
+        <View style={[S.rightControls, { top: routeInfo ? insets.top + 185 : insets.top + 130 }]}>
+          <TouchableOpacity 
+            style={S.ctrlBtn} 
+            onPress={onLocate} 
+            onLongPress={showRouteStats}
+          >
+            <Text style={S.ctrlIcon}>📍</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={S.ctrlBtn} onPress={clearRoute}>
+            <Text style={S.ctrlIcon}>🧹</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={S.ctrlBtn} onPress={zoomIn}>
+            <Text style={S.ctrlIcon}>＋</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={S.ctrlBtn} onPress={zoomOut}>
+            <Text style={S.ctrlIcon}>－</Text>
           </TouchableOpacity>
         </View>
 
-        {/* ── History Card ── */}
-        <View style={styles.card}>
-          <View style={styles.row}>
-            <Text style={styles.cardTitle}>📋 History</Text>
-            {connectionHistory.length > 0 && (
-              <TouchableOpacity onPress={clearHistory}>
-                <Text style={styles.clearBtn}>🗑 Clear</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-
-          {connectionHistory.length > 0 ? (
-            connectionHistory.slice(0, 10).map((item, i) => (
-              <View key={i} style={styles.historyItem}>
-                <Text style={styles.historyIcon}>
-                  {item.type === 'connect' ? '🟢' : '🔴'}
-                </Text>
-
-                <View style={{flex: 1}}>
-                  <Text style={styles.historyDevice}>{item.device}</Text>
-
-                  <Text style={styles.historyTime}>
-                    ⏰ {item.time} | 📅 {item.date}
-                  </Text>
-
-                  {item.activity && item.activity !== 'unknown' && (
-                    <Text style={styles.historyActivity}>
-                      {activityIcon(item.activity)} {niceActivityLabel(item.activity)}
-                    </Text>
-                  )}
-
-                  {item.location && (
-                    <TouchableOpacity onPress={() => openMaps(item.location)}>
-                      <Text style={styles.historyLoc}>
-                        📍 {formatLatLng6(item.location)}
-                      </Text>
-                    </TouchableOpacity>
-                  )}
-
-                  {item.type === 'disconnect' &&
-                    Number.isFinite(item.distanceMeters) && (
-                      <Text style={styles.historyDistance}>
-                        📏 Distance: {Math.round(item.distanceMeters)} m
-                      </Text>
-                    )}
-                </View>
-              </View>
-            ))
-          ) : (
-            <Text style={styles.muted}>No history yet.</Text>
-          )}
-        </View>
-
-        {/* ── Refresh BT Button ── */}
-        <TouchableOpacity
-          style={styles.refreshBtn}
-          onPress={startBluetoothListening}>
-          <Text style={styles.refreshText}>🔄 Refresh Bluetooth</Text>
-        </TouchableOpacity>
-
-        <View style={{height: 50}} />
-      </ScrollView>
-
-      {/* ── Device Select Modal ── */}
-      <Modal visible={showDeviceModal} transparent animationType="slide">
-        <View style={styles.modalBg}>
-          <View style={styles.modalBox}>
-            <View style={styles.row}>
-              <Text style={styles.modalTitle}>Select Device</Text>
-              <TouchableOpacity onPress={() => setShowDeviceModal(false)}>
-                <Text style={styles.modalX}>✕</Text>
-              </TouchableOpacity>
+        <View style={[S.findParkingWrap, { bottom: 86 + insets.bottom }]}>
+          <TouchableOpacity style={S.findParkingBtn} onPress={onFindParking}>
+            <Text style={S.findParkingIcon}>🅿️</Text>
+            <Text style={S.findParkingText}>Find Parking</Text>
+            <View style={S.findParkingBadge}>
+              <Text style={S.findParkingBadgeText}>
+                {allSpots.filter(s => !s.isOccupied && !s.isMySpot).length}
+              </Text>
             </View>
-
-            {pairedDevices.length > 0 ? (
-              <FlatList
-                data={pairedDevices}
-                keyExtractor={d => d.address}
-                renderItem={({item}) => (
-                  <TouchableOpacity
-                    style={[
-                      styles.modalDevice,
-                      selectedDevice?.address === item.address &&
-                        styles.modalDeviceSelected,
-                    ]}
-                    onPress={() => selectDevice(item)}>
-                    <Text style={styles.modalDeviceIcon}>🎧</Text>
-                    <View style={{flex: 1}}>
-                      <Text style={styles.modalDeviceName}>{item.name}</Text>
-                      <Text style={styles.modalDeviceAddr}>{item.address}</Text>
-                    </View>
-                    {selectedDevice?.address === item.address && (
-                      <Text style={styles.check}>✓</Text>
-                    )}
-                  </TouchableOpacity>
-                )}
-              />
-            ) : (
-              <Text style={styles.muted}>No paired devices found.</Text>
-            )}
-
-            <TouchableOpacity
-              style={styles.modalRefresh}
-              onPress={startBluetoothListening}>
-              <Text style={styles.modalRefreshText}>🔄 Refresh</Text>
-            </TouchableOpacity>
-          </View>
+          </TouchableOpacity>
         </View>
-      </Modal>
+
+        <View style={[S.tabBar, { paddingBottom: Math.max(12, insets.bottom) }]}>
+          <TouchableOpacity style={S.tabItem}>
+            <Text style={[S.tabIcon, S.tabIconActive]}>🗺️</Text>
+            <Text style={[S.tabLabel, S.tabLabelActive]}>Explore</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={S.tabItem}>
+            <Text style={S.tabIcon}>🔖</Text>
+            <Text style={S.tabLabel}>Saved</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={S.tabCenterPlus}>
+            <Text style={S.tabPlus}>＋</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={S.tabItem}>
+            <Text style={S.tabIcon}>👥</Text>
+            <Text style={S.tabLabel}>Contribute</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={S.tabItem}>
+            <Text style={S.tabIcon}>👤</Text>
+            <Text style={S.tabLabel}>Profile</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Spot Details Modal */}
+        <Modal 
+          visible={showModal} 
+          transparent 
+          animationType="slide" 
+          onRequestClose={() => setShowModal(false)}
+        >
+          <View style={S.modalOverlay}>
+            <TouchableOpacity 
+              style={S.modalBackdrop} 
+              onPress={() => setShowModal(false)} 
+            />
+            <View style={S.modalContent}>
+              <View style={S.modalHandle} />
+              <View style={S.modalHeader}>
+                <Text style={S.modalTitle}>
+                  {selectedSpot?.isMySpot ? '🚗 Your Spot' : '🅿️ Parking'}
+                </Text>
+                <TouchableOpacity onPress={() => setShowModal(false)}>
+                  <Text style={S.modalClose}>✕</Text>
+                </TouchableOpacity>
+              </View>
+              {selectedSpot && (
+                <ScrollView style={S.modalBody}>
+                  <View style={[
+                    S.statusBadge, 
+                    { backgroundColor: selectedSpot.isOccupied ? '#FFEBEE' : '#E8F5E9' }
+                  ]}>
+                    <Text style={[
+                      S.statusText, 
+                      { color: selectedSpot.isOccupied ? '#E53935' : '#4CAF50' }
+                    ]}>
+                      {selectedSpot.isOccupied ? '🔴 Occupied' : '🟢 Available'}
+                    </Text>
+                  </View>
+                  <View style={S.infoCard}>
+                    <Text style={S.infoRow}>
+                      📏 {formatDistance(selectedSpot.distance)}
+                    </Text>
+                    <Text style={S.infoRow}>
+                      🚗 {selectedSpot.deviceName}
+                    </Text>
+                    <Text style={S.infoRow}>
+                      🕐 {formatTime(selectedSpot.createdAt)}
+                    </Text>
+                  </View>
+                  <View style={S.noCacheBadge}>
+                    <Text style={S.noCacheBadgeText}>🔥 Routes fetched fresh (No Cache)</Text>
+                  </View>
+                  <View style={S.modalActions}>
+                    <TouchableOpacity 
+                      style={S.routeBtn} 
+                      onPress={() => onShowRoute(selectedSpot)}
+                    >
+                      <Text style={S.routeBtnText}>🗺️ Show Route</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity 
+                      style={S.navigationBtn} 
+                      onPress={() => onShowNavigation(selectedSpot)}
+                    >
+                      <Text style={S.navigationBtnText}>🧭 Turn-by-Turn</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity 
+                      style={S.navigateBtn} 
+                      onPress={() => onNavigate(selectedSpot)}
+                    >
+                      <Text style={S.navigateBtnText}>📱 Google Maps</Text>
+                    </TouchableOpacity>
+                  </View>
+                </ScrollView>
+              )}
+            </View>
+          </View>
+        </Modal>
+
+        {/* Navigation Modal */}
+        <Modal 
+          visible={showNavigation} 
+          transparent 
+          animationType="slide" 
+          onRequestClose={() => setShowNavigation(false)}
+        >
+          <SafeAreaView style={S.navModalContainer}>
+            <View style={S.navModalContent}>
+              <View style={S.navModalHeader}>
+                <TouchableOpacity 
+                  onPress={() => setShowNavigation(false)} 
+                  style={S.navModalCloseBtn}
+                >
+                  <Text style={S.navModalClose}>←</Text>
+                </TouchableOpacity>
+                <Text style={S.navModalTitle}>Navigation</Text>
+                <View style={{ width: 44 }} />
+              </View>
+              {routeInfo && (
+                <View style={S.navSummary}>
+                  <View style={S.navSummaryItem}>
+                    <Text style={S.navSummaryValue}>
+                      {formatDistance(routeInfo.totalDistance)}
+                    </Text>
+                    <Text style={S.navSummaryLabel}>Distance</Text>
+                  </View>
+                  <View style={S.navSummaryDivider} />
+                  <View style={S.navSummaryItem}>
+                    <Text style={S.navSummaryValue}>
+                      {formatDuration(routeInfo.totalDuration)}
+                    </Text>
+                    <Text style={S.navSummaryLabel}>Duration</Text>
+                  </View>
+                  <View style={S.navSummaryDivider} />
+                  <View style={S.navSummaryItem}>
+                    <Text style={S.navSummaryValue}>🔥</Text>
+                    <Text style={S.navSummaryLabel}>Fresh</Text>
+                  </View>
+                </View>
+              )}
+              <FlatList 
+                data={navigationSteps} 
+                renderItem={renderStep} 
+                keyExtractor={(item) => item.id} 
+                contentContainerStyle={S.navStepsList} 
+                ListEmptyComponent={
+                  <View style={S.navEmptyState}>
+                    <Text style={S.navEmptyIcon}>🗺️</Text>
+                    <Text style={S.navEmptyText}>No navigation steps available</Text>
+                    <Text style={S.navEmptySubtext}>Route data fetched fresh from backend</Text>
+                  </View>
+                } 
+              />
+            </View>
+          </SafeAreaView>
+        </Modal>
+      </View>
     </SafeAreaView>
   );
-};
+}
 
-// ─── STYLES ─────────────────────────────────────────────────
-const styles = StyleSheet.create({
-  container: {flex: 1, backgroundColor: '#F0F2F5'},
-
-  loading: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#1A237E',
+/* ─────────── STYLES ─────────── */
+const S = StyleSheet.create({
+  safe: { flex: 1, backgroundColor: '#F8F9FA' },
+  container: { flex: 1 },
+  loading: { 
+    flex: 1, 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    backgroundColor: '#fff' 
   },
-  loadingText: {color: '#FFF', fontSize: 18, marginTop: 12},
-
-  header: {
-    paddingTop: 16,
-    paddingBottom: 20,
-    paddingHorizontal: 20,
-    alignItems: 'center',
+  loadingTitle: { 
+    marginTop: 16, 
+    fontSize: 16, 
+    fontWeight: '700',
+    color: '#111' 
   },
-  title: {fontSize: 28, fontWeight: 'bold', color: '#FFF'},
-  subtitle: {fontSize: 12, color: '#FFF', opacity: 0.85, marginTop: 2},
-  badges: {
-    flexDirection: 'row',
-    marginTop: 12,
-    flexWrap: 'wrap',
-    justifyContent: 'center',
-    gap: 6,
-  },
-  badge: {
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 12,
-  },
-  badgeWarning: {backgroundColor: 'rgba(255,160,0,0.5)'},
-  badgeText: {color: '#FFF', fontSize: 12, fontWeight: '600'},
-
-  scroll: {flex: 1, padding: 12},
-
-  card: {
-    backgroundColor: '#FFF',
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 12,
-    elevation: 2,
-  },
-  arCard: {borderLeftWidth: 4, borderLeftColor: '#1976D2'},
-
-  row: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  cardTitle: {fontSize: 16, fontWeight: 'bold', color: '#222'},
-
-  btn: {
-    backgroundColor: '#1976D2',
-    paddingHorizontal: 14,
-    paddingVertical: 7,
-    borderRadius: 10,
-  },
-  btnText: {color: '#FFF', fontWeight: '600', fontSize: 13},
-
-  activityBig: {
-    borderRadius: 14,
-    padding: 20,
-    alignItems: 'center',
-    marginVertical: 10,
-  },
-  activityIcon: {fontSize: 42},
-  activityLabel: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    color: '#FFF',
-    marginTop: 6,
-  },
-  activityConf: {fontSize: 13, color: 'rgba(255,255,255,0.85)', marginTop: 4},
-
-  arInfoText: {fontSize: 13, color: '#555', marginBottom: 4},
-
-  deviceBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#E3F2FD',
-    padding: 14,
-    borderRadius: 12,
-  },
-  deviceIcon: {fontSize: 28, marginRight: 12},
-  deviceName: {fontSize: 15, fontWeight: 'bold', color: '#1565C0'},
-  deviceAddr: {fontSize: 11, color: '#64B5F6', marginTop: 2},
-  x: {fontSize: 22, color: '#F44336', paddingHorizontal: 8},
-  muted: {
-    color: '#888',
-    fontStyle: 'italic',
-    textAlign: 'center',
-    padding: 10,
+  loadingSubtitle: {
+    marginTop: 8,
+    fontSize: 13,
+    color: '#666',
   },
 
-  statusCard: {
-    borderRadius: 18,
-    padding: 28,
-    alignItems: 'center',
-    marginBottom: 12,
-    elevation: 4,
+  routeLoadingOverlay: { 
+    position: 'absolute', 
+    top: 0, 
+    left: 0, 
+    right: 0, 
+    bottom: 0, 
+    backgroundColor: 'rgba(0,0,0,0.4)', 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    zIndex: 1000 
   },
-  dot: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: 'rgba(255,255,255,0.4)',
-    marginBottom: 10,
+  routeLoadingCard: { 
+    backgroundColor: '#fff', 
+    padding: 30, 
+    borderRadius: 20, 
+    alignItems: 'center', 
+    elevation: 10,
+    minWidth: 200,
   },
-  statusTitle: {fontSize: 26, fontWeight: 'bold', color: '#FFF'},
-  statusSub: {fontSize: 14, color: '#FFF', opacity: 0.9, marginTop: 4},
-  statusTime: {fontSize: 13, color: '#FFF', opacity: 0.8, marginTop: 6},
-  smallWhite: {fontSize: 12, color: '#FFF', opacity: 0.95, marginTop: 10},
-
-  arStatusBadge: {
-    backgroundColor: 'rgba(255,255,255,0.25)',
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: 20,
-    marginTop: 10,
+  routeLoadingText: { 
+    marginTop: 16, 
+    fontSize: 16, 
+    fontWeight: '700', 
+    color: '#111' 
   },
-  arStatusText: {color: '#FFF', fontWeight: '700', fontSize: 14},
-
-  locBtn: {
-    marginTop: 14,
-    backgroundColor: 'rgba(255,255,255,0.25)',
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 20,
-  },
-  locBtnText: {color: '#FFF', fontWeight: 'bold', fontSize: 14},
-
-  parkedCard: {
-    backgroundColor: '#FFF',
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 12,
-    borderLeftWidth: 4,
-    borderLeftColor: '#FF5722',
-    elevation: 2,
-  },
-  parkedTitle: {
-    fontSize: 15,
-    fontWeight: 'bold',
-    color: '#E65100',
-    marginBottom: 6,
-  },
-  parkedBig: {fontSize: 20, fontWeight: '700', color: '#222', marginTop: 4},
-  parkedSource: {fontSize: 11, color: '#888', marginTop: 6},
-  mapsBtn: {
-    backgroundColor: '#4285F4',
-    marginTop: 12,
-    padding: 13,
-    borderRadius: 10,
-    alignItems: 'center',
-  },
-  mapsBtnText: {color: '#FFF', fontWeight: 'bold', fontSize: 14},
-
-  locStatus: {fontSize: 13, color: '#555', marginBottom: 10},
-  testBtn: {
-    backgroundColor: '#9C27B0',
-    padding: 13,
-    borderRadius: 10,
-    alignItems: 'center',
-  },
-  testBtnText: {color: '#FFF', fontWeight: 'bold', fontSize: 14},
-
-  clearBtn: {fontSize: 13, color: '#F44336', fontWeight: '600'},
-
-  historyItem: {
-    flexDirection: 'row',
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F0F0F0',
-    alignItems: 'flex-start',
-  },
-  historyIcon: {fontSize: 18, marginRight: 10, marginTop: 2},
-  historyDevice: {fontSize: 14, fontWeight: '600', color: '#222'},
-  historyTime: {fontSize: 11, color: '#666', marginTop: 2},
-  historyActivity: {
-    fontSize: 11,
-    color: '#1976D2',
-    marginTop: 2,
+  routeLoadingSubtext: {
+    marginTop: 8,
+    fontSize: 13,
+    color: '#E53935',
     fontWeight: '600',
   },
-  historyLoc: {fontSize: 11, color: '#1976D2', marginTop: 3},
-  historyDistance: {fontSize: 11, color: '#444', marginTop: 4, fontWeight: '600'},
 
-  refreshBtn: {
-    backgroundColor: '#1976D2',
-    padding: 15,
-    borderRadius: 12,
-    alignItems: 'center',
-    elevation: 2,
+  searchBarWrap: { 
+    position: 'absolute', 
+    left: 16, 
+    right: 16, 
+    zIndex: 30 
   },
-  refreshText: {color: '#FFF', fontSize: 15, fontWeight: 'bold'},
+  searchBar: { 
+    height: 52, 
+    backgroundColor: '#fff', 
+    borderRadius: 16, 
+    paddingHorizontal: 16, 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    elevation: 8 
+  },
+  searchIcon: { fontSize: 18, marginRight: 10 },
+  searchInput: { flex: 1, fontSize: 15, color: '#111' },
+  searchClear: { fontSize: 18, color: '#999', marginRight: 10 },
+  searchActionBtn: { 
+    width: 36, 
+    height: 36, 
+    borderRadius: 12, 
+    backgroundColor: '#F5F5F5', 
+    justifyContent: 'center', 
+    alignItems: 'center' 
+  },
+  searchAction: { fontSize: 18, color: '#E53935', fontWeight: '700' },
 
-  modalBg: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    justifyContent: 'flex-end',
+  topPillsRow: { 
+    position: 'absolute', 
+    left: 16, 
+    right: 16, 
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    zIndex: 25 
   },
-  modalBox: {
-    backgroundColor: '#FFF',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    padding: 20,
-    maxHeight: '65%',
+  pillBtn: { 
+    backgroundColor: '#fff', 
+    paddingHorizontal: 16, 
+    height: 42, 
+    borderRadius: 21, 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    elevation: 4 
   },
-  modalTitle: {fontSize: 18, fontWeight: 'bold', color: '#222'},
-  modalX: {fontSize: 26, color: '#999'},
-  modalDevice: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 14,
-    backgroundColor: '#F5F5F5',
+  pillDisabled: { opacity: 0.5 },
+  pillIcon: { fontSize: 14, marginRight: 6 },
+  pillText: { fontSize: 13, fontWeight: '700', color: '#111' },
+
+  routeInfoCard: { 
+    position: 'absolute', 
+    left: 16, 
+    right: 16, 
+    backgroundColor: '#fff', 
+    borderRadius: 16, 
+    padding: 14, 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    elevation: 6, 
+    zIndex: 24 
+  },
+  routeInfoContent: { flex: 1, flexDirection: 'row' },
+  routeInfoItem: { flex: 1, alignItems: 'center' },
+  routeInfoValue: { fontSize: 16, fontWeight: '800', color: '#E53935' },
+  routeInfoLabel: { fontSize: 11, color: '#666', marginTop: 2 },
+  routeInfoDivider: { 
+    width: 1, 
+    height: 30, 
+    backgroundColor: '#E0E0E0', 
+    marginHorizontal: 8 
+  },
+  routeInfoClose: { 
+    width: 32, 
+    height: 32, 
+    borderRadius: 16, 
+    backgroundColor: '#F5F5F5', 
+    justifyContent: 'center', 
+    alignItems: 'center' 
+  },
+  routeInfoCloseText: { fontSize: 14, color: '#666' },
+
+  rightControls: { position: 'absolute', right: 16, zIndex: 20, gap: 10 },
+  ctrlBtn: { 
+    width: 48, 
+    height: 48, 
+    borderRadius: 14, 
+    backgroundColor: '#fff', 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    elevation: 4 
+  },
+  ctrlIcon: { fontSize: 20 },
+
+  findParkingWrap: { position: 'absolute', left: 20, right: 20, zIndex: 20 },
+  findParkingBtn: { 
+    height: 58, 
+    backgroundColor: '#E53935', 
+    borderRadius: 16, 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    justifyContent: 'center', 
+    elevation: 10 
+  },
+  findParkingIcon: { fontSize: 20, marginRight: 10 },
+  findParkingText: { fontSize: 17, fontWeight: '800', color: '#fff' },
+  findParkingBadge: { 
+    backgroundColor: '#fff', 
+    paddingHorizontal: 10, 
+    paddingVertical: 4, 
+    borderRadius: 12, 
+    marginLeft: 12 
+  },
+  findParkingBadgeText: { fontSize: 13, fontWeight: '800', color: '#E53935' },
+
+  tabBar: { 
+    position: 'absolute', 
+    left: 0, 
+    right: 0, 
+    bottom: 0, 
+    paddingTop: 12, 
+    backgroundColor: '#fff', 
+    borderTopLeftRadius: 24, 
+    borderTopRightRadius: 24, 
+    flexDirection: 'row', 
+    justifyContent: 'space-around', 
+    elevation: 15 
+  },
+  tabItem: { width: 60, alignItems: 'center', paddingVertical: 6 },
+  tabIcon: { fontSize: 22, color: '#666' },
+  tabLabel: { fontSize: 10, marginTop: 4, color: '#666', fontWeight: '600' },
+  tabIconActive: { color: '#E53935' },
+  tabLabelActive: { color: '#E53935' },
+  tabCenterPlus: { 
+    width: 60, 
+    height: 60, 
+    borderRadius: 30, 
+    backgroundColor: '#E53935', 
+    alignItems: 'center', 
+    justifyContent: 'center', 
+    marginBottom: 10, 
+    elevation: 10 
+  },
+  tabPlus: { fontSize: 32, color: '#fff' },
+
+  modalOverlay: { flex: 1, justifyContent: 'flex-end' },
+  modalBackdrop: { 
+    ...StyleSheet.absoluteFillObject, 
+    backgroundColor: 'rgba(0,0,0,0.4)' 
+  },
+  modalContent: { 
+    backgroundColor: '#fff', 
+    borderTopLeftRadius: 28, 
+    borderTopRightRadius: 28, 
+    maxHeight: '75%', 
+    elevation: 20 
+  },
+  modalHandle: { 
+    width: 40, 
+    height: 4, 
+    backgroundColor: '#DDD', 
+    borderRadius: 2, 
+    alignSelf: 'center', 
+    marginTop: 12 
+  },
+  modalHeader: { 
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    alignItems: 'center', 
+    padding: 20, 
+    borderBottomWidth: 1, 
+    borderBottomColor: '#F0F0F0' 
+  },
+  modalTitle: { fontSize: 20, fontWeight: '800', color: '#111' },
+  modalClose: { fontSize: 24, color: '#999' },
+  modalBody: { padding: 20 },
+
+  statusBadge: { 
+    alignSelf: 'flex-start', 
+    paddingHorizontal: 14, 
+    paddingVertical: 8, 
+    borderRadius: 20, 
+    marginBottom: 16 
+  },
+  statusText: { fontSize: 13, fontWeight: '700' },
+
+  infoCard: { 
+    backgroundColor: '#F8F9FA', 
+    borderRadius: 16, 
+    padding: 16, 
+    marginBottom: 12 
+  },
+  infoRow: { fontSize: 14, color: '#111', paddingVertical: 6 },
+
+  noCacheBadge: {
+    backgroundColor: '#FFF3E0',
     borderRadius: 12,
-    marginBottom: 10,
-  },
-  modalDeviceSelected: {
-    backgroundColor: '#E3F2FD',
-    borderWidth: 2,
-    borderColor: '#1976D2',
-  },
-  modalDeviceIcon: {fontSize: 26, marginRight: 12},
-  modalDeviceName: {fontSize: 15, fontWeight: '600', color: '#222'},
-  modalDeviceAddr: {fontSize: 11, color: '#888', marginTop: 2},
-  check: {fontSize: 22, color: '#4CAF50', fontWeight: 'bold'},
-  modalRefresh: {
-    backgroundColor: '#E3F2FD',
-    padding: 14,
-    borderRadius: 12,
+    padding: 12,
+    marginBottom: 16,
     alignItems: 'center',
-    marginTop: 8,
   },
-  modalRefreshText: {color: '#1976D2', fontWeight: 'bold', fontSize: 14},
+  noCacheBadgeText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#E65100',
+  },
+
+  modalActions: { gap: 12 },
+  routeBtn: { 
+    backgroundColor: '#F0F0F0', 
+    padding: 16, 
+    borderRadius: 14, 
+    alignItems: 'center' 
+  },
+  routeBtnText: { fontSize: 15, fontWeight: '700', color: '#111' },
+  navigationBtn: { 
+    backgroundColor: '#FFF3E0', 
+    padding: 16, 
+    borderRadius: 14, 
+    alignItems: 'center' 
+  },
+  navigationBtnText: { fontSize: 15, fontWeight: '700', color: '#E65100' },
+  navigateBtn: { 
+    backgroundColor: '#E53935', 
+    padding: 16, 
+    borderRadius: 14, 
+    alignItems: 'center' 
+  },
+  navigateBtnText: { fontSize: 15, fontWeight: '700', color: '#fff' },
+
+  navModalContainer: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)' },
+  navModalContent: { 
+    flex: 1, 
+    backgroundColor: '#fff', 
+    marginTop: 60, 
+    borderTopLeftRadius: 28, 
+    borderTopRightRadius: 28, 
+    elevation: 20 
+  },
+  navModalHeader: { 
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    alignItems: 'center', 
+    padding: 18, 
+    borderBottomWidth: 1, 
+    borderBottomColor: '#F0F0F0' 
+  },
+  navModalCloseBtn: { 
+    width: 44, 
+    height: 44, 
+    borderRadius: 22, 
+    backgroundColor: '#F5F5F5', 
+    justifyContent: 'center', 
+    alignItems: 'center' 
+  },
+  navModalClose: { fontSize: 24, color: '#111' },
+  navModalTitle: { fontSize: 18, fontWeight: '800', color: '#111' },
+
+  navSummary: { 
+    flexDirection: 'row', 
+    padding: 16, 
+    backgroundColor: '#F8F9FA', 
+    borderBottomWidth: 1, 
+    borderBottomColor: '#EEE' 
+  },
+  navSummaryItem: { flex: 1, alignItems: 'center' },
+  navSummaryValue: { fontSize: 16, fontWeight: '800', color: '#111' },
+  navSummaryLabel: { fontSize: 11, color: '#666', marginTop: 2 },
+  navSummaryDivider: { 
+    width: 1, 
+    backgroundColor: '#E0E0E0', 
+    marginHorizontal: 10 
+  },
+
+  navStepsList: { padding: 16 },
+  navStep: { flexDirection: 'row', marginBottom: 6 },
+  navStepLeft: { alignItems: 'center', marginRight: 14 },
+  navIconContainer: { 
+    width: 48, 
+    height: 48, 
+    borderRadius: 24, 
+    backgroundColor: '#E53935', 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    elevation: 4 
+  },
+  navIcon: { fontSize: 22 },
+  navConnector: { 
+    width: 3, 
+    flex: 1, 
+    backgroundColor: '#E8E8E8', 
+    marginVertical: 6, 
+    borderRadius: 2 
+  },
+  navStepRight: { 
+    flex: 1, 
+    backgroundColor: '#F8F9FA', 
+    padding: 14, 
+    borderRadius: 14, 
+    marginBottom: 8 
+  },
+  navStepHeader: { 
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    marginBottom: 8 
+  },
+  navStepNumber: { fontSize: 11, color: '#666', fontWeight: '700' },
+  navStepDistance: { fontSize: 12, color: '#E53935', fontWeight: '800' },
+  navStepInstruction: { 
+    fontSize: 14, 
+    color: '#111', 
+    fontWeight: '700', 
+    marginBottom: 8, 
+    lineHeight: 20 
+  },
+  navStepDuration: { fontSize: 11, color: '#999' },
+
+  navEmptyState: { alignItems: 'center', paddingVertical: 60 },
+  navEmptyIcon: { fontSize: 60, marginBottom: 20 },
+  navEmptyText: { fontSize: 14, color: '#666' },
+  navEmptySubtext: { fontSize: 12, color: '#999', marginTop: 8 },
 });
-
-export default BluetoothDemoScreen;

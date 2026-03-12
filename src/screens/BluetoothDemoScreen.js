@@ -22,7 +22,7 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import BluetoothService from '../services/BluetoothService';
-
+import { useNavigation } from '@react-navigation/native';
 const { BluetoothModule, ActivityRecognitionModule } = NativeModules;
 
 // ═══════════════════════════════════════════════════════════
@@ -155,6 +155,7 @@ const useStorage = () => {
 // ═══════════════════════════════════════════════════════════
 
 const BluetoothDemoScreen = () => {
+  const navigation = useNavigation();
 
   // ─── STATE ──────────────────────────────────────────────
   const [bootLoading, setBootLoading] = useState(true);
@@ -1016,7 +1017,7 @@ const BluetoothDemoScreen = () => {
 
 
 
-
+// In BluetoothDemoScreen.js, add this TouchableOpacity:
 
 
   // ═══════════════════════════════════════════════════════════
@@ -1216,6 +1217,25 @@ const BluetoothDemoScreen = () => {
             </View>
           )}
         </View>
+
+<TouchableOpacity
+  style={{
+    backgroundColor: '#E53935',
+    padding: 15,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginBottom: 12,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 8,
+  }}
+  onPress={() => navigation.navigate('ParkingMap')}
+>
+  <Text style={{ fontSize: 20 }}>🗺️</Text>
+  <Text style={{ color: '#FFF', fontSize: 15, fontWeight: 'bold' }}>
+    Open Map
+  </Text>
+</TouchableOpacity>
 
         {/* ═══ BT STATUS ═══ */}
         <View style={[S.btCard, { backgroundColor: connected ? '#43A047' : '#78909C' }]}>
