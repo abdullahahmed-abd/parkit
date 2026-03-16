@@ -12,6 +12,7 @@
   "dependencies": {
     "@hugeicons/core-free-icons": "^1.1.0",
     "@hugeicons/react-native": "^1.0.7",
+    "@maplibre/maplibre-react-native": "^10.4.2",
     "@react-native-clipboard/clipboard": "^1.16.3",
     "@react-native-community/blur": "^4.4.1",
     "@react-native-community/datetimepicker": "^8.4.4",
@@ -52,6 +53,7 @@
     "react-native-screens": "^4.22.0",
     "react-native-size-matters": "^0.4.2",
     "react-native-svg": "^15.15.0",
+    "react-native-tts": "^4.1.1",
     "react-native-vector-icons": "^10.3.0",
     "react-native-webview": "^13.15.0",
     "rn-qr-generator": "^1.4.5",
