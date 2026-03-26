@@ -1,23 +1,20 @@
 // src/services/ParkingService.js
 // ═══════════════════════════════════════════════════════════════
-// PARKIT - Parking Service
-// Handles PARK / LEAVE events + NEARBY_PARKING_SLOTS fetch
+// PARKIT - Parking Service (FINAL WORKING VERSION)
 // ═══════════════════════════════════════════════════════════════
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-// ═══════════════════════════════════════════════════════════════
-// CONFIG
-// ═══════════════════════════════════════════════════════════════
+const API_BASE_URL =
+  'https://3fca-2405-201-3037-e001-b079-bd76-8a44-f0e6.ngrok-free.app';
+
 const API_CONFIG = {
-  baseUrl: __DEV__
-    ? 'https://27da-2405-201-3037-e001-5539-821c-ff1e-6612.ngrok-free.app'
-    : 'https://your-production-api.com',
+  baseUrl: API_BASE_URL,
   parkingEventEndpoint: '/parkit-api/parking-event',
   operateEndpoint: '/parkit-api/operate',
   timeout: 15000,
   maxRetries: 2,
-  defaultRadius: 500, // meters
+  defaultRadius: 500,
 };
 
 const STORAGE_KEYS = {
@@ -36,14 +33,8 @@ const REQUEST_TYPES = {
   ROUTE: 'ROUTE',
 };
 
-// ═══════════════════════════════════════════════════════════════
-// LOGGER
-// ═══════════════════════════════════════════════════════════════
-const LOG_ENABLED = __DEV__;
-
 const Logger = {
   _log(emoji, tag, message, data) {
-    if (!LOG_ENABLED) return;
     const ts = new Date().toISOString().split('T')[1].split('.')[0];
     const extra = data ? ` ${JSON.stringify(data)}` : '';
     console.log(`[${ts}] ${emoji} [${tag}] ${message}${extra}`);
@@ -62,9 +53,6 @@ const Logger = {
   },
 };
 
-// ═══════════════════════════════════════════════════════════════
-// FETCH WITH TIMEOUT
-// ═══════════════════════════════════════════════════════════════
 const fetchWithTimeout = (url, options = {}, timeout = 15000) => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
@@ -73,22 +61,13 @@ const fetchWithTimeout = (url, options = {}, timeout = 15000) => {
   );
 };
 
-// ═══════════════════════════════════════════════════════════════
-// VALIDATION
-// ═══════════════════════════════════════════════════════════════
 const isValidCoordinate = (lat, lng) =>
   Number.isFinite(lat) &&
   Number.isFinite(lng) &&
   Math.abs(lat) <= 90 &&
   Math.abs(lng) <= 180;
 
-// ═══════════════════════════════════════════════════════════════
-// PARKING SERVICE
-// ═══════════════════════════════════════════════════════════════
 const ParkingService = {
-  // ─────────────────────────────────────────────────────────
-  // Send parking event (PARK / LEAVE) to backend
-  // ─────────────────────────────────────────────────────────
   async sendParkingEvent(latitude, longitude, eventType, retryCount = 0) {
     const url = `${API_CONFIG.baseUrl}${API_CONFIG.parkingEventEndpoint}`;
 
@@ -174,11 +153,10 @@ const ParkingService = {
     }
   },
 
-  // ─────────────────────────────────────────────────────────
-  // OCCUPY — sends eventType: "PARK"
-  // ─────────────────────────────────────────────────────────
   async occupySpot(latitude, longitude) {
     Logger.info('PARKING', '🅿️ ===== OCCUPY SPOT (PARK) =====');
+    Logger.info('PARKING', `Location: ${latitude}, ${longitude}`);
+    Logger.info('PARKING', `EventType: "${EVENT_TYPES.PARK}"`);
 
     const result = await this.sendParkingEvent(
       latitude,
@@ -208,11 +186,10 @@ const ParkingService = {
     return spotData;
   },
 
-  // ─────────────────────────────────────────────────────────
-  // VACATE — sends eventType: "LEAVE"
-  // ─────────────────────────────────────────────────────────
   async vacateSpot(latitude, longitude) {
     Logger.info('PARKING', '🚗 ===== VACATE SPOT (LEAVE) =====');
+    Logger.info('PARKING', `Location: ${latitude}, ${longitude}`);
+    Logger.info('PARKING', `EventType: "${EVENT_TYPES.LEAVE}"`);
 
     const result = await this.sendParkingEvent(
       latitude,
@@ -245,12 +222,12 @@ const ParkingService = {
     return vacatedSpot;
   },
 
-  // ─────────────────────────────────────────────────────────
-  // 🆕 FETCH NEARBY PARKING SLOTS from backend
-  // POST /parkit-api/operate
-  // { userLat, userLon, radius, requestType: "NEARBY_PARKING_SLOTS" }
-  // ─────────────────────────────────────────────────────────
-  async fetchNearbySpots(latitude, longitude, radius = API_CONFIG.defaultRadius, retryCount = 0) {
+  async fetchNearbySpots(
+    latitude,
+    longitude,
+    radius = API_CONFIG.defaultRadius,
+    retryCount = 0,
+  ) {
     const url = `${API_CONFIG.baseUrl}${API_CONFIG.operateEndpoint}`;
 
     if (!isValidCoordinate(latitude, longitude)) {
@@ -287,7 +264,6 @@ const ParkingService = {
 
       const responseText = await response.text();
       Logger.info('NEARBY', `Response status: ${response.status}`);
-      Logger.info('NEARBY', `Response body: ${responseText}`);
 
       let responseData = null;
       try {
@@ -304,15 +280,6 @@ const ParkingService = {
         );
       }
 
-      // ── Parse response into spot objects ──
-      // Backend may return in various formats — handle all:
-      //
-      // Format 1: { slots: [...] }
-      // Format 2: { parkingSlots: [...] }
-      // Format 3: { data: [...] }
-      // Format 4: [...] (direct array)
-      // Format 5: { data: { slots: [...] } }
-
       let rawSlots = [];
 
       if (Array.isArray(responseData)) {
@@ -321,14 +288,13 @@ const ParkingService = {
         rawSlots = responseData.slots;
       } else if (Array.isArray(responseData?.parkingSlots)) {
         rawSlots = responseData.parkingSlots;
+      } else if (Array.isArray(responseData?.parkingSlotsList)) {
+        rawSlots = responseData.parkingSlotsList;
       } else if (Array.isArray(responseData?.data)) {
         rawSlots = responseData.data;
       } else if (Array.isArray(responseData?.data?.slots)) {
         rawSlots = responseData.data.slots;
-      } else if (Array.isArray(responseData?.data?.parkingSlots)) {
-        rawSlots = responseData.data.parkingSlots;
       } else if (responseData && typeof responseData === 'object') {
-        // Try to find any array inside
         const keys = Object.keys(responseData);
         for (const key of keys) {
           if (Array.isArray(responseData[key])) {
@@ -341,10 +307,8 @@ const ParkingService = {
 
       Logger.info('NEARBY', `Raw slots count: ${rawSlots.length}`);
 
-      // ── Normalize each slot to our app format ──
       const spots = rawSlots
         .map((slot, index) => {
-          // Handle different field names from backend
           const lat =
             slot.latitude ??
             slot.lat ??
@@ -372,10 +336,7 @@ const ParkingService = {
             return null;
           }
 
-          // Determine occupied status
-          // Backend may use: isOccupied, occupied, status, available, eventType
           let isOccupied = false;
-
           if (typeof slot.isOccupied === 'boolean') {
             isOccupied = slot.isOccupied;
           } else if (typeof slot.occupied === 'boolean') {
@@ -394,7 +355,6 @@ const ParkingService = {
             isOccupied = slot.eventType.toUpperCase() === 'PARK';
           }
 
-          // Device / name
           const deviceName =
             slot.deviceName ??
             slot.name ??
@@ -404,7 +364,6 @@ const ParkingService = {
             slot.label ??
             `Spot ${index + 1}`;
 
-          // ID
           const spotId =
             slot.id ??
             slot.slotId ??
@@ -412,7 +371,6 @@ const ParkingService = {
             slot._id ??
             `nearby_${index}_${Date.now()}`;
 
-          // Created time
           const createdAt =
             slot.createdAt ??
             slot.timestamp ??
@@ -432,20 +390,20 @@ const ParkingService = {
                 ? new Date(createdAt).getTime()
                 : createdAt,
             eventType: slot.eventType || (isOccupied ? 'PARK' : 'LEAVE'),
-            // Keep original data for debugging
             _raw: __DEV__ ? slot : undefined,
           };
         })
-        .filter(Boolean); // Remove nulls
+        .filter(Boolean);
 
       Logger.success(
         'NEARBY',
-        `✅ Parsed ${spots.length} valid spots from ${rawSlots.length} raw`,
+        `✅ Parsed ${spots.length} spots from ${rawSlots.length} raw`,
       );
-      Logger.info('NEARBY', `Occupied: ${spots.filter(s => s.isOccupied).length}`);
-      Logger.info('NEARBY', `Available: ${spots.filter(s => !s.isOccupied).length}`);
+      Logger.info(
+        'NEARBY',
+        `Occupied: ${spots.filter(s => s.isOccupied).length} | Available: ${spots.filter(s => !s.isOccupied).length}`,
+      );
 
-      // Cache the result
       try {
         await AsyncStorage.setItem(
           STORAGE_KEYS.NEARBY_CACHE,
@@ -462,7 +420,6 @@ const ParkingService = {
     } catch (error) {
       Logger.error('NEARBY', 'Fetch nearby FAILED', error);
 
-      // Retry
       if (retryCount < API_CONFIG.maxRetries) {
         const delay = 2000 * (retryCount + 1);
         Logger.warn(
@@ -478,14 +435,15 @@ const ParkingService = {
         );
       }
 
-      // Try cached data as fallback
       try {
         const cached = await AsyncStorage.getItem(STORAGE_KEYS.NEARBY_CACHE);
         if (cached) {
           const parsed = JSON.parse(cached);
-          // Use cache if less than 5 min old
           if (Date.now() - parsed.timestamp < 5 * 60 * 1000) {
-            Logger.warn('NEARBY', `Using cached data (${parsed.spots.length} spots)`);
+            Logger.warn(
+              'NEARBY',
+              `Using cached data (${parsed.spots.length} spots)`,
+            );
             return parsed.spots;
           }
         }
@@ -495,9 +453,6 @@ const ParkingService = {
     }
   },
 
-  // ─────────────────────────────────────────────────────────
-  // GET / CLEAR SAVED SPOT
-  // ─────────────────────────────────────────────────────────
   async getMySpot() {
     try {
       const stored = await AsyncStorage.getItem(STORAGE_KEYS.MY_SPOT);
@@ -518,18 +473,12 @@ const ParkingService = {
     }
   },
 
-  // ─────────────────────────────────────────────────────────
-  // CLEAR NEARBY CACHE
-  // ─────────────────────────────────────────────────────────
   async clearNearbyCache() {
     try {
       await AsyncStorage.removeItem(STORAGE_KEYS.NEARBY_CACHE);
     } catch (_) {}
   },
 
-  // ─────────────────────────────────────────────────────────
-  // HISTORY
-  // ─────────────────────────────────────────────────────────
   async _addToHistory(event) {
     try {
       const historyStr = await AsyncStorage.getItem(
