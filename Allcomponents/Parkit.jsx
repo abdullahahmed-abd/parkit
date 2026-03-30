@@ -1,1164 +1,2292 @@
 // src/screens/ParkingMapScreen.js
+// ═══════════════════════════════════════════════════════════════
+// PARKIT v5.4 - PRODUCTION READY - ALL BUGS FIXED
+// ═══════════════════════════════════════════════════════════════
+// FIXES:
+// 1. Blue dot now snaps to route line
+// 2. No crash on arrival at destination
+// 3. No crash on End Navigation
+// ═══════════════════════════════════════════════════════════════
 
-import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import React, {
+  useEffect, useRef, useState, useCallback, useMemo,
+} from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  Alert,
-  ActivityIndicator,
-  NativeModules,
-  Linking,
-  Modal,
-  ScrollView,
-  FlatList,
-  TextInput,
-  Keyboard,
-  Platform,
+  View, Text, StyleSheet, TouchableOpacity, Alert,
+  ActivityIndicator, NativeModules, Linking, Modal,
+  ScrollView, FlatList, TextInput, Keyboard, Platform,
+  AppState, PermissionsAndroid,
 } from 'react-native';
-import { WebView } from 'react-native-webview';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import MapLibreGL from '@maplibre/maplibre-react-native';
+import Geolocation from '@react-native-community/geolocation';
+import ParkingService from '../services/ParkingService';
 
-const { BluetoothModule } = NativeModules;
+import {
+  Logger, NAV_CONFIG, NEARBY_CONFIG, DEFAULT_LOC, EMPTY_STYLE,
+  API_BASE_URL, BACKEND_CONFIG, APP_CONFIG,
+  validLL, calcDistance, calcBearing, smoothHeading,
+  findNearestPointOnRoute, formatDistance, formatDuration,
+  formatDistanceNav, formatTime, fetchWithTimeout,
+  VoiceGuidance, RoutingService, RouteCache,
+  routeLineManager, stepTracker, estimateRemainingTime,
+  LOCATION_TRACKING_CONFIG, locationProcessor, NavigationDebug,
+} from '../services/NavigationService';
 
-/* ─────────────────────────────────────────────────────────────
-   BACKEND CONFIGURATION
-────────────────────────────────────────────────────────────── */
-const BACKEND_CONFIG = {
-  baseUrl: 'https://cb38-2405-201-3037-e001-c059-8276-d489-7631.ngrok-free.app/parkit-api/operate',
-  timeout: 15000,
-  maxRetries: 2,
-};
+MapLibreGL.setAccessToken(null);
+const {BluetoothModule} = NativeModules;
 
-/* ─────────────────────────────────────────────────────────────
-   POLYLINE DECODER
-────────────────────────────────────────────────────────────── */
-const decodePolyline = (encoded) => {
-  if (!encoded || typeof encoded !== 'string') return [];
-  
-  const coordinates = [];
-  let index = 0;
-  let lat = 0;
-  let lng = 0;
-
-  while (index < encoded.length) {
-    let shift = 0;
-    let result = 0;
-    let byte;
-
-    // Decode latitude
-    do {
-      byte = encoded.charCodeAt(index++) - 63;
-      result |= (byte & 0x1f) << shift;
-      shift += 5;
-    } while (byte >= 0x20);
-
-    const deltaLat = result & 1 ? ~(result >> 1) : result >> 1;
-    lat += deltaLat;
-
-    // Decode longitude
-    shift = 0;
-    result = 0;
-
-    do {
-      byte = encoded.charCodeAt(index++) - 63;
-      result |= (byte & 0x1f) << shift;
-      shift += 5;
-    } while (byte >= 0x20);
-
-    const deltaLng = result & 1 ? ~(result >> 1) : result >> 1;
-    lng += deltaLng;
-
-    // Convert to degrees and push [lng, lat] (GeoJSON format)
-    coordinates.push([lng / 1e5, lat / 1e5]);
+// ═══════════════════════════════════════════════════════════════
+// HELPER: SNAP USER TO ROUTE
+// ═══════════════════════════════════════════════════════════════
+const snapUserToRoute = (userLocation, routeCoordinates) => {
+  if (!userLocation || !routeCoordinates || routeCoordinates.length < 2) {
+    Logger.verbose('SNAP', '❌ Cannot snap - invalid input');
+    return null;
   }
 
-  return coordinates;
-};
+  try {
+    const nearest = findNearestPointOnRoute(userLocation, routeCoordinates);
+    
+    if (!nearest || !nearest.point) {
+      Logger.warn('SNAP', '❌ No nearest point found');
+      return null;
+    }
 
-/* ─────────────────────────────────────────────────────────────
-   LANGUAGE FIX HELPERS
-────────────────────────────────────────────────────────────── */
-const isAscii = (s) => typeof s === 'string' && /^[\x00-\x7F]*$/.test(s);
-const sanitizeStreetName = (name) => {
-  if (typeof name !== 'string') return '';
-  const trimmed = name.trim();
-  return trimmed && isAscii(trimmed) ? trimmed : '';
-};
+    // If too far from route, don't snap (user might be off-route)
+    if (nearest.distance > 100) {
+      Logger.warn('SNAP', `⚠️ Too far from route: ${nearest.distance.toFixed(1)}m - not snapping`);
+      return null;
+    }
 
-/* ─────────────────────────────────────────────────────────────
-   TURN-BY-TURN ICONS + INSTRUCTIONS
-────────────────────────────────────────────────────────────── */
-const MANEUVER_ICONS = {
-  'turn-right': '➡️',
-  'turn-left': '⬅️',
-  'turn-slight-right': '↗️',
-  'turn-slight-left': '↖️',
-  'turn-sharp-right': '⤴️',
-  'turn-sharp-left': '⤵️',
-  continue: '⬆️',
-  straight: '⬆️',
-  roundabout: '🔄',
-  'roundabout-right': '🔄➡️',
-  'roundabout-left': '🔄⬅️',
-  'ramp-right': '🛣️➡️',
-  'ramp-left': '🛣️⬅️',
-  'on-ramp': '🛣️',
-  'off-ramp': '🛣️',
-  'fork-right': '🔱➡️',
-  'fork-left': '🔱⬅️',
-  merge: '🔀',
-  depart: '🚀',
-  arrive: '🎯',
-  'exit roundabout': '🔄',
-  default: '⬆️',
-};
-
-const getManeuverIcon = (type, modifier) => {
-  const key = modifier ? `${type}-${modifier}` : type;
-  return MANEUVER_ICONS[key] || MANEUVER_ICONS[type] || MANEUVER_ICONS.default;
-};
-
-const getManeuverInstruction = (type, modifier, name, distance) => {
-  const clean = sanitizeStreetName(name);
-  const streetName = clean || 'the road';
-  const distText = distance < 1000 ? `${Math.round(distance)} m` : `${(distance / 1000).toFixed(1)} km`;
-
-  if (type === 'depart') return `Start on ${streetName}`;
-  if (type === 'arrive') return 'You have arrived at your destination';
-
-  if (type === 'turn') {
-    if (modifier === 'right') return `Turn right onto ${streetName} (${distText})`;
-    if (modifier === 'left') return `Turn left onto ${streetName} (${distText})`;
-    if (modifier === 'slight right') return `Keep right onto ${streetName} (${distText})`;
-    if (modifier === 'slight left') return `Keep left onto ${streetName} (${distText})`;
-    if (modifier === 'sharp right') return `Sharp right onto ${streetName} (${distText})`;
-    if (modifier === 'sharp left') return `Sharp left onto ${streetName} (${distText})`;
+    Logger.verbose('SNAP', `✅ Snapped: dist=${nearest.distance.toFixed(1)}m, seg=${nearest.segmentIndex}`);
+    
+    return {
+      latitude: nearest.point.lat,
+      longitude: nearest.point.lng,
+      snappedDistance: nearest.distance,
+      segmentIndex: nearest.segmentIndex,
+    };
+  } catch (error) {
+    Logger.error('SNAP', 'snapUserToRoute failed', error);
+    return null;
   }
-
-  if (type === 'new name') return `Continue onto ${streetName} (${distText})`;
-  if (type === 'continue' || type === 'straight') return `Continue on ${streetName} (${distText})`;
-  if (type === 'roundabout') return `Take the roundabout onto ${streetName} (${distText})`;
-  if (type === 'exit roundabout') return `Exit roundabout onto ${streetName} (${distText})`;
-  if (type === 'fork') {
-    if (modifier === 'right') return `Keep right at fork (${distText})`;
-    if (modifier === 'left') return `Keep left at fork (${distText})`;
-  }
-  if (type === 'merge') return `Merge onto ${streetName} (${distText})`;
-
-  return `Continue ${distText}`;
 };
 
-/* ─────────────────────────────────────────────────────────────
-   BACKEND ROUTING SERVICE (NO CACHE - Always hits backend)
-────────────────────────────────────────────────────────────── */
-const RoutingService = {
-  requestCounter: 0,
-  failureCount: 0,
-  successCount: 0,
-  lastBackendMessage: '',
-
-  fetchRoute: async (startLat, startLng, destLat, destLng, retryCount = 0) => {
-    const requestId = ++RoutingService.requestCounter;
-    console.log(`[BACKEND] #${requestId} Starting route request (NO CACHE - Fresh request)...`);
-
+// ═══════════════════════════════════════════════════════════════
+// SAFE CLEANUP HELPER
+// ═══════════════════════════════════════════════════════════════
+const SafeCleanup = {
+  async cleanupNavigation() {
+    Logger.info('CLEANUP', '🧹 SafeCleanup.cleanupNavigation started');
+    
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => {
-        console.log(`[BACKEND] #${requestId} Timeout!`);
-        controller.abort();
-      }, BACKEND_CONFIG.timeout);
-
-      const requestBody = {
-        startLat: startLat,
-        startLon: startLng,
-        endLat: destLat,
-        endLon: destLng,
-        requestType: 'ROUTE',
-      };
-
-      console.log(`[BACKEND] #${requestId} Request:`, JSON.stringify(requestBody));
-
-      const response = await fetch(BACKEND_CONFIG.baseUrl, {
-        method: 'POST',
-        signal: controller.signal,
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: JSON.stringify(requestBody),
-      });
-
-      clearTimeout(timeoutId);
-
-      const responseText = await response.text();
-      console.log(`[BACKEND] #${requestId} Raw Response:`, responseText.substring(0, 500));
-
-      let data;
-      try {
-        data = JSON.parse(responseText);
-      } catch (parseError) {
-        throw new Error(`Invalid JSON response: ${responseText.substring(0, 100)}`);
+      // Step 1: Stop voice
+      try { 
+        VoiceGuidance.stop(); 
+        Logger.verbose('CLEANUP', '✅ Voice stopped');
+      } catch (e) { 
+        Logger.error('CLEANUP', 'Voice stop failed', e); 
       }
 
-      // Check for backend message
-      const backendMessage = data?.message || data?.geometry?.message || '';
-      RoutingService.lastBackendMessage = backendMessage;
-      
-      console.log(`[BACKEND] #${requestId} Backend Message:`, backendMessage);
-      console.log(`[BACKEND] #${requestId} Response Status:`, data?.status || data?.geometry?.code);
-
-      // Check if backend returned error status
-      if (data?.status === 'error' || data?.status === 'ERROR') {
-        throw new Error(backendMessage || 'Backend returned error status');
+      // Step 2: Reset step tracker
+      try { 
+        stepTracker.reset(); 
+        Logger.verbose('CLEANUP', '✅ StepTracker reset');
+      } catch (e) { 
+        Logger.error('CLEANUP', 'StepTracker reset failed', e); 
       }
 
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${backendMessage || 'Request failed'}`);
+      // Step 3: Clear route manager
+      try { 
+        routeLineManager.clear(); 
+        Logger.verbose('CLEANUP', '✅ RouteLineManager cleared');
+      } catch (e) { 
+        Logger.error('CLEANUP', 'RouteLineManager clear failed', e); 
       }
 
-      // Validate backend response
-      if (!data?.geometry?.routes || data.geometry.routes.length === 0) {
-        throw new Error(backendMessage || 'No routes in response');
+      // Step 4: Reset location processor
+      try { 
+        locationProcessor.reset(); 
+        Logger.verbose('CLEANUP', '✅ LocationProcessor reset');
+      } catch (e) { 
+        Logger.error('CLEANUP', 'LocationProcessor reset failed', e); 
       }
 
-      if (data.geometry.code !== 'Ok') {
-        throw new Error(`Backend error: ${data.geometry.code} - ${backendMessage}`);
-      }
-
-      const route = data.geometry.routes[0];
-
-      // 🔥 DECODE POLYLINE TO COORDINATES
-      let coordinates = [];
-      
-      if (route.geometry && typeof route.geometry === 'string') {
-        console.log(`[BACKEND] #${requestId} Decoding polyline...`);
-        try {
-          coordinates = decodePolyline(route.geometry);
-          console.log(`[BACKEND] #${requestId} Decoded ${coordinates.length} points`);
-        } catch (decodeError) {
-          console.log(`[BACKEND] #${requestId} Decode error:`, decodeError.message);
-          throw new Error('Failed to decode polyline');
-        }
-      } else if (route.geometry?.coordinates) {
-        coordinates = route.geometry.coordinates;
-      }
-
-      if (coordinates.length === 0) {
-        throw new Error('No coordinates in route');
-      }
-
-      // Transform to internal format
-      const transformedData = {
-        routes: [{
-          geometry: {
-            coordinates: coordinates,
-            type: 'LineString',
-          },
-          distance: route.distance || 0,
-          duration: route.duration || 0,
-          legs: route.legs || [],
-          weight_name: route.weight_name,
-          weight: route.weight,
-        }],
-        waypoints: data.geometry.waypoints || [],
-        code: data.geometry.code,
-        backendMessage: backendMessage || 'Route fetched successfully',
-        status: 'success',
-      };
-
-      console.log(
-        `[BACKEND] #${requestId} ✅ SUCCESS! ` +
-        `Distance: ${route.distance}m, ` +
-        `Duration: ${route.duration}s, ` +
-        `Points: ${coordinates.length}, ` +
-        `Message: ${backendMessage}`
-      );
-      
-      RoutingService.successCount++;
-
-      return transformedData;
-
+      Logger.success('CLEANUP', '🧹 SafeCleanup.cleanupNavigation completed');
+      return true;
     } catch (error) {
-      console.log(`[BACKEND] #${requestId} ❌ Error:`, error.message);
-      RoutingService.failureCount++;
-      RoutingService.lastBackendMessage = error.message;
-
-      // Retry logic
-      if (retryCount < BACKEND_CONFIG.maxRetries) {
-        const delay = 2000 * (retryCount + 1);
-        console.log(`[BACKEND] #${requestId} Retrying in ${delay}ms...`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-        return RoutingService.fetchRoute(startLat, startLng, destLat, destLng, retryCount + 1);
-      }
-
-      throw new Error(error.message || 'Backend routing failed');
+      Logger.error('CLEANUP', '❌ SafeCleanup failed', error);
+      return false;
     }
   },
-
-  getStats: () => ({
-    totalRequests: RoutingService.requestCounter,
-    successfulRequests: RoutingService.successCount,
-    failedRequests: RoutingService.failureCount,
-    lastMessage: RoutingService.lastBackendMessage,
-  }),
 };
 
-/* ─────────────────────────────────────────────────────────────
-   CONSTANTS + DEMO DATA
-────────────────────────────────────────────────────────────── */
-const STORAGE_KEYS = {
-  MY_SPOT: 'myParkingSpot',
-  ROUTE_STATS: 'routeStats',
+// ═══════════════════════════════════════════════════════════════
+// MARKERS
+// ═══════════════════════════════════════════════════════════════
+const ParkingMarker = React.memo(({spot, onPress}) => {
+  let color = '#4CAF50', icon = '✓';
+  if (spot.isMySpot) { color = '#1976D2'; icon = '🚗'; }
+  else if (spot.isOccupied) { color = '#E53935'; icon = '🅿️'; }
+  return (
+    <MapLibreGL.MarkerView id={`marker-${spot.id}`} coordinate={[spot.longitude, spot.latitude]} anchor={{x: 0.5, y: 1}}>
+      <TouchableOpacity onPress={() => onPress(spot)} activeOpacity={0.8} style={S.markerTouchable}>
+        <View style={[S.markerContainer, {backgroundColor: color}]}><Text style={S.markerIcon}>{icon}</Text></View>
+        <View style={[S.markerArrow, {borderTopColor: color}]} />
+      </TouchableOpacity>
+    </MapLibreGL.MarkerView>
+  );
+});
+
+// ═══════════════════════════════════════════════════════════════
+// ✅ FIXED USER LOCATION MARKER (Uses snapped position)
+// ═══════════════════════════════════════════════════════════════
+const UserLocationMarker = React.memo(({coordinate, heading, isNavigating, accuracy, snappedCoordinate}) => {
+  // ✅ Use snapped coordinate during navigation if available
+  const displayCoordinate = isNavigating && snappedCoordinate 
+    ? snappedCoordinate 
+    : coordinate;
+  
+  if (!displayCoordinate || displayCoordinate.length !== 2) {
+    Logger.verbose('MARKER', '❌ No valid coordinate for marker');
+    return null;
+  }
+  
+  const rotationStyle = heading !== null ? {
+    transform: [{rotate: `${heading}deg`}]
+  } : {};
+
+  // ✅ Log which coordinate is being used
+  Logger.verbose('MARKER', 
+    `📍 Rendering at: ${displayCoordinate[1]?.toFixed(6)}, ${displayCoordinate[0]?.toFixed(6)} ` +
+    `(${isNavigating && snappedCoordinate ? 'SNAPPED' : 'RAW'})`
+  );
+  
+  return (
+    <MapLibreGL.MarkerView 
+      id="user-location-marker" 
+      coordinate={displayCoordinate} 
+      anchor={{x: 0.5, y: 0.5}}
+      allowOverlap={true}
+    >
+      <View style={S.userMarkerContainer}>
+        {isNavigating && accuracy > 0 && (
+          <View style={[S.userMarkerAccuracy, {
+            width: Math.min(accuracy * 2, 100), height: Math.min(accuracy * 2, 100),
+            borderRadius: Math.min(accuracy, 50),
+          }]} />
+        )}
+        <View style={[S.userMarkerOuter, isNavigating && S.userMarkerOuterNav]}>
+          <View style={[S.userMarkerInner, isNavigating && S.userMarkerInnerNav, rotationStyle]}>
+            {isNavigating && heading !== null && (
+              <View style={S.userMarkerArrowWrap}>
+                <View style={S.userMarkerArrow2} />
+              </View>
+            )}
+          </View>
+        </View>
+      </View>
+    </MapLibreGL.MarkerView>
+  );
+});
+
+const SearchMarker = React.memo(({coordinate}) => (
+  <MapLibreGL.MarkerView id="search-marker" coordinate={[coordinate.longitude, coordinate.latitude]} anchor={{x: 0.5, y: 1}}>
+    <View style={{alignItems: 'center'}}><Text style={{fontSize: 40}}>📍</Text></View>
+  </MapLibreGL.MarkerView>
+));
+
+const DestinationMarker = React.memo(({coordinate}) => (
+  <MapLibreGL.MarkerView id="destination-marker" coordinate={[coordinate.longitude, coordinate.latitude]} anchor={{x: 0.5, y: 1}}>
+    <View style={{alignItems: 'center'}}>
+      <View style={S.destMarker}><Text style={{fontSize: 26}}>🎯</Text></View>
+      <View style={S.destMarkerArrow} />
+    </View>
+  </MapLibreGL.MarkerView>
+));
+
+// ═══════════════════════════════════════════════════════════════
+// NAVIGATION PANEL
+// ═══════════════════════════════════════════════════════════════
+const NavigationPanel = React.memo(({
+  currentStep, nextStep, distanceToNextStep, totalRemainingDistance,
+  totalRemainingTime, progress, onClose, onRecenter, isRecentering,
+  voiceEnabled, onToggleVoice,
+}) => {
+  if (!currentStep) return null;
+  return (
+    <View style={S.navPanel}>
+      <View style={S.navPanelProgressWrap}>
+        <View style={[S.navPanelProgressFill, {width: `${Math.min(progress * 100, 100)}%`}]} />
+      </View>
+      <View style={S.navPanelHeader}>
+        <TouchableOpacity style={S.navPanelCloseBtn} onPress={onClose}>
+          <Text style={S.navPanelCloseTxt}>✕</Text>
+        </TouchableOpacity>
+        <View style={{flexDirection: 'row', alignItems: 'center'}}>
+          <Text style={S.navPanelETA}>{formatDuration(totalRemainingTime)}</Text>
+          <Text style={{fontSize: 18, color: '#999', marginHorizontal: 8}}>•</Text>
+          <Text style={S.navPanelDist}>{formatDistance(totalRemainingDistance)}</Text>
+        </View>
+        <View style={{flexDirection: 'row', gap: 8}}>
+          <TouchableOpacity style={[S.navPanelSmBtn, !voiceEnabled && {backgroundColor: '#FFEBEE'}]} onPress={onToggleVoice}>
+            <Text style={{fontSize: 18}}>{voiceEnabled ? '🔊' : '🔇'}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[S.navPanelSmBtn, isRecentering && {backgroundColor: '#E3F2FD'}]} onPress={onRecenter}>
+            <Text style={{fontSize: 18}}>🎯</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+      <View style={S.navPanelCard}>
+        <View style={S.navPanelIconBox}><Text style={{fontSize: 34}}>{currentStep.icon}</Text></View>
+        <View style={{flex: 1}}>
+          <Text style={S.navPanelTurnDist}>{distanceToNextStep > 0 ? formatDistanceNav(distanceToNextStep) : 'Now'}</Text>
+          <Text style={S.navPanelInstruction} numberOfLines={2}>{currentStep.instruction}</Text>
+        </View>
+      </View>
+      {nextStep && nextStep.maneuverType !== 'arrive' && (
+        <View style={S.navPanelNext}>
+          <Text style={{fontSize: 13, color: '#999', marginRight: 12, fontWeight: '600'}}>Then</Text>
+          <View style={S.navPanelNextIconBox}><Text style={{fontSize: 18}}>{nextStep.icon}</Text></View>
+          <Text style={{flex: 1, fontSize: 14, color: '#666', fontWeight: '500'}} numberOfLines={1}>{nextStep.instruction}</Text>
+        </View>
+      )}
+    </View>
+  );
+});
+
+const NavigationStepItem = React.memo(({step, index, currentStepIndex, distanceToNextStep, totalSteps}) => {
+  const isCurrent = index === currentStepIndex;
+  const isPast = index < currentStepIndex;
+  return (
+    <View style={[S.navStep, isCurrent && S.navStepCurrent, isPast && S.navStepPast]}>
+      <View style={S.navStepLeft}>
+        <View style={[S.navIconBox, step.maneuverType === 'arrive' && {backgroundColor: '#4CAF50'}, isCurrent && S.navIconBoxCurrent, isPast && S.navIconBoxPast]}>
+          <Text style={{fontSize: 24}}>{step.icon}</Text>
+        </View>
+        {index < totalSteps - 1 && <View style={[S.navConnector, isPast && S.navConnectorPast]} />}
+      </View>
+      <View style={[S.navStepRight, isCurrent && S.navStepRightCurrent]}>
+        <View style={{flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8}}>
+          <Text style={[S.navStepNum, isPast && S.navStepTxtPast]}>Step {step.stepNumber}</Text>
+          <Text style={[S.navStepDist, isPast && S.navStepTxtPast]}>{formatDistance(step.distance)}</Text>
+        </View>
+        <Text style={[S.navStepInstr, isPast && S.navStepTxtPast]} numberOfLines={2}>{step.instruction}</Text>
+        {step.name ? <Text style={[{fontSize: 13, color: '#666', marginBottom: 6, fontWeight: '500'}, isPast && S.navStepTxtPast]} numberOfLines={1}>📍 {step.name}</Text> : null}
+        <Text style={[{fontSize: 12, color: '#999', fontWeight: '500'}, isPast && S.navStepTxtPast]}>⏱️ ~{formatDuration(step.duration)}</Text>
+        {isCurrent && distanceToNextStep > 0 && (
+          <View style={S.navStepBadge}><Text style={S.navStepBadgeTxt}>📍 In {formatDistanceNav(distanceToNextStep)}</Text></View>
+        )}
+      </View>
+    </View>
+  );
+});
+
+class MapErrorBoundary extends React.Component {
+  state = {hasError: false, error: null};
+  static getDerivedStateFromError(error) { return {hasError: true, error}; }
+  componentDidCatch(error, errorInfo) { 
+    Logger.error('BOUNDARY', 'Map crash', error);
+    Logger.error('BOUNDARY', 'Error info', errorInfo);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <SafeAreaView style={S.errorBoundary}>
+          <Text style={{fontSize: 64, marginBottom: 16}}>🗺️</Text>
+          <Text style={{fontSize: 20, fontWeight: '800', color: '#111'}}>Something went wrong</Text>
+          <Text style={{fontSize: 14, color: '#666', marginTop: 8, textAlign: 'center', paddingHorizontal: 20}}>
+            {this.state.error?.message || 'Unknown error'}
+          </Text>
+          <TouchableOpacity style={S.errorBtn} onPress={() => this.setState({hasError: false, error: null})}>
+            <Text style={{fontSize: 16, fontWeight: '700', color: '#fff'}}>Retry</Text>
+          </TouchableOpacity>
+        </SafeAreaView>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+const LocationPermission = {
+  async request() {
+    Logger.info('PERMISSION', '🔑 Requesting location permission...');
+    if (Platform.OS === 'android') {
+      try {
+        const fine = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+          { title: 'Location Permission', message: 'ParkIt needs location access for navigation.', buttonPositive: 'Allow', buttonNegative: 'Deny' });
+        Logger.info('PERMISSION', `Fine location result: ${fine}`);
+        if (fine !== PermissionsAndroid.RESULTS.GRANTED) {
+          Alert.alert('Permission Required', 'Location permission is needed for navigation.', [
+            {text: 'Cancel'}, 
+            {text: 'Settings', onPress: () => Linking.openSettings()}
+          ]);
+          return false;
+        }
+        if (Platform.Version >= 29) {
+          const bg = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION);
+          Logger.info('PERMISSION', `Background location result: ${bg}`);
+        }
+        Logger.success('PERMISSION', '✅ Location permission granted');
+        return true;
+      } catch (e) { 
+        Logger.error('PERMISSION', 'Request failed', e);
+        return false; 
+      }
+    }
+    return true;
+  },
 };
 
-const DEFAULT_LOC = { latitude: 23.2599, longitude: 77.4126 };
-
-const generateDemoSpots = (centerLat, centerLng) => [
-  { id: 'demo_1', latitude: centerLat + 0.002, longitude: centerLng + 0.001, isOccupied: true, deviceName: 'Honda City', userId: 'user1', createdAt: Date.now() - 3600000 },
-  { id: 'demo_2', latitude: centerLat - 0.001, longitude: centerLng + 0.002, isOccupied: false, deviceName: 'Maruti Swift', userId: 'user2', createdAt: Date.now() - 7200000 },
-  { id: 'demo_3', latitude: centerLat + 0.001, longitude: centerLng - 0.002, isOccupied: true, deviceName: 'Hyundai i20', userId: 'user3', createdAt: Date.now() - 1800000 },
-  { id: 'demo_4', latitude: centerLat - 0.002, longitude: centerLng - 0.001, isOccupied: false, deviceName: 'Tata Nexon', userId: 'user4', createdAt: Date.now() - 900000 },
-  { id: 'demo_5', latitude: centerLat + 0.0015, longitude: centerLng + 0.0018, isOccupied: true, deviceName: 'Mahindra XUV', userId: 'user5', createdAt: Date.now() - 5400000 },
-];
-
-/* ─────────────────────────────────────────────────────────────
-   MAIN SCREEN
-────────────────────────────────────────────────────────────── */
-export default function ParkingMapScreen({ navigation }) {
+// ═══════════════════════════════════════════════════════════════
+// ═══ MAIN SCREEN v5.4 — ALL BUGS FIXED ═════════════════════════
+// ═══════════════════════════════════════════════════════════════
+function ParkingMapScreenInner({navigation}) {
   const insets = useSafeAreaInsets();
-  const webRef = useRef(null);
+  const mapRef = useRef(null);
+  const cameraRef = useRef(null);
+  const appStateRef = useRef(AppState.currentState);
 
+  // Tracking refs
+  const locationWatchId = useRef(null);
+  const passiveWatchId = useRef(null);
+  const navIntervalRef = useRef(null);
+  const isNavigatingRef = useRef(false);
+  const followUserRef = useRef(true);
+  const totalDistanceRef = useRef(0);
+  const totalDurationRef = useRef(0);
+  const lastLocationRef = useRef(null);
+  const lastCameraUpdateRef = useRef(0);
+  const gpsSpeedRef = useRef(0);
+  const reroutingRef = useRef(false);
+  const rerouteCountRef = useRef(0);
+  const lastRerouteTimeRef = useRef(0);
+  const nearbyRefreshTimerRef = useRef(null);
+  const lastNearbyFetchLocRef = useRef(null);
+  const hasActiveRouteRef = useRef(false);
+  const lastRouteUpdateRef = useRef(0);
+  const isMountedRef = useRef(true);
+  const isStoppingRef = useRef(false);
+  const isCleaningUpRef = useRef(false);
+  const smoothedHeadingRef = useRef(0);
+  const renderCountRef = useRef(0);
+  const routeCoordinatesRef = useRef(null);
+
+  // ✅ NEW: Snapped user position for blue dot
+  const [snappedUserCoord, setSnappedUserCoord] = useState(null);
+  const snappedUserCoordRef = useRef(null);
+
+  // User marker state
+  const [userMarkerCoord, setUserMarkerCoord] = useState([DEFAULT_LOC.longitude, DEFAULT_LOC.latitude]);
+  const userMarkerCoordRef = useRef([DEFAULT_LOC.longitude, DEFAULT_LOC.latitude]);
+  const lastMarkerUpdateRef = useRef(0);
+
+  // Loading states
   const [loading, setLoading] = useState(true);
+  const [tilesLoaded, setTilesLoaded] = useState(false);
   const [routeLoading, setRouteLoading] = useState(false);
   const [gettingLoc, setGettingLoc] = useState(false);
+  const [spotsLoading, setSpotsLoading] = useState(false);
 
+  // Location & tracking state
   const [userLoc, setUserLoc] = useState(DEFAULT_LOC);
+  const [userHeading, setUserHeading] = useState(null);
+  const [locationAccuracy, setLocationAccuracy] = useState(0);
+  const [locationSource, setLocationSource] = useState('waiting');
+
+  // Parking state
   const [mySpot, setMySpot] = useState(null);
   const [allSpots, setAllSpots] = useState([]);
-
   const [selectedSpot, setSelectedSpot] = useState(null);
   const [showModal, setShowModal] = useState(false);
 
+  // Route state
+  const [routeCoordinates, setRouteCoordinates] = useState(null);
+  const [routeInfo, setRouteInfo] = useState(null);
+  const [destination, setDestination] = useState(null);
+
+  // Navigation state
   const [navigationSteps, setNavigationSteps] = useState([]);
   const [showNavigation, setShowNavigation] = useState(false);
-  const [routeInfo, setRouteInfo] = useState(null);
+  const [isNavigating, setIsNavigating] = useState(false);
+  const [currentStepIndex, setCurrentStepIndex] = useState(0);
+  const [distanceToNextStep, setDistanceToNextStep] = useState(0);
+  const [remainingDistance, setRemainingDistance] = useState(0);
+  const [remainingDuration, setRemainingDuration] = useState(0);
+  const [navigationProgress, setNavigationProgress] = useState(0);
+  const [followUser, setFollowUser] = useState(true);
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
 
+  // Search state
   const [searchQuery, setSearchQuery] = useState('');
   const [searching, setSearching] = useState(false);
+  const [searchMarker, setSearchMarker] = useState(null);
+  const [zoomLevel, setZoomLevel] = useState(14);
 
-  const [routeStats, setRouteStats] = useState({
-    totalRequests: 0,
-    successfulRequests: 0,
-    failedRequests: 0,
-    lastMessage: '',
-  });
+  renderCountRef.current++;
+  Logger.verbose('RENDER', `🔄 Render #${renderCountRef.current}`);
 
-  /* ───────── Utilities ───────── */
-  const validLL = (lat, lng) =>
-    Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180;
+  // ═════════════════════════════════════════════════════════════
+  // ✅ SYNC routeCoordinates to ref for use in callbacks
+  // ═════════════════════════════════════════════════════════════
+  useEffect(() => {
+    routeCoordinatesRef.current = routeCoordinates;
+    Logger.verbose('STATE', `📍 routeCoordinates updated: ${routeCoordinates?.length || 0} points`);
+  }, [routeCoordinates]);
 
-  const calcDistance = (lat1, lng1, lat2, lng2) => {
-    const R = 6371000;
-    const rad = (x) => (x * Math.PI) / 180;
-    const dLat = rad(lat2 - lat1);
-    const dLng = rad(lng2 - lng1);
-    const a = Math.sin(dLat / 2) ** 2 + Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(dLng / 2) ** 2;
-    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  };
-
-  const formatDistance = (meters) => {
-    if (!Number.isFinite(meters)) return 'N/A';
-    return meters < 1000 ? `${Math.round(meters)} m` : `${(meters / 1000).toFixed(1)} km`;
-  };
-
-  const formatTime = (timestamp) => {
-    if (!timestamp) return 'N/A';
-    const mins = Math.floor((Date.now() - timestamp) / 60000);
-    if (mins < 60) return `${mins} min ago`;
-    return `${Math.floor(mins / 60)} hr ago`;
-  };
-
-  const formatDuration = (seconds) => {
-    if (!seconds) return 'N/A';
-    const mins = Math.round(seconds / 60);
-    if (mins < 60) return `${mins} min`;
-    return `${Math.floor(mins / 60)} hr ${mins % 60} min`;
-  };
-
-  /* ───────── Location ───────── */
+  // ═════════════════════════════════════════════════════════════
+  // GET LOCATION (INITIAL)
+  // ═════════════════════════════════════════════════════════════
   const getLoc = useCallback(async () => {
+    Logger.loc('🔍 ═══ GETTING CURRENT LOCATION ═══');
     setGettingLoc(true);
     try {
-      if (BluetoothModule?.getFreshLocation) {
-        try {
-          const loc = await Promise.race([
-            BluetoothModule.getFreshLocation(),
-            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000)),
-          ]);
-          if (validLL(loc?.latitude, loc?.longitude)) {
-            return { latitude: loc.latitude, longitude: loc.longitude, source: 'GPS' };
-          }
-        } catch (e) {
-          console.log('[LOC] GPS failed:', e.message);
-        }
+      const hasPermission = await LocationPermission.request();
+      if (!hasPermission) {
+        Logger.warn('LOC', 'Permission denied, using default');
+        return {...DEFAULT_LOC, source: 'Default'};
       }
 
+      // Try high accuracy GPS
       try {
-        const controller = new AbortController();
-        const t = setTimeout(() => controller.abort(), 5000);
-        const res = await fetch('https://ipapi.co/json/', { signal: controller.signal });
-        clearTimeout(t);
-        const d = await res.json();
-        if (validLL(d?.latitude, d?.longitude)) {
-          return { latitude: d.latitude, longitude: d.longitude, source: 'IP' };
+        Logger.loc('📡 Trying high accuracy GPS...');
+        const pos = await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error('Timeout')), 10000);
+          Geolocation.getCurrentPosition(
+            res => { clearTimeout(timeout); resolve(res); },
+            err => { clearTimeout(timeout); reject(err); },
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000, forceLocationManager: false });
+        });
+        if (validLL(pos.coords.latitude, pos.coords.longitude)) {
+          Logger.success('LOC', `📍 GPS: ${pos.coords.latitude.toFixed(6)}, ${pos.coords.longitude.toFixed(6)} ±${pos.coords.accuracy?.toFixed(0)}m`);
+          setLocationSource(`GPS ±${pos.coords.accuracy?.toFixed(0)}m`);
+          return { 
+            latitude: pos.coords.latitude, 
+            longitude: pos.coords.longitude, 
+            accuracy: pos.coords.accuracy, 
+            heading: pos.coords.heading, 
+            source: 'GPS' 
+          };
         }
-      } catch (e) {
-        console.log('[LOC] IP failed:', e.message);
+      } catch (e) { 
+        Logger.warn('LOC', 'High accuracy GPS failed', e.message); 
       }
 
-      return { ...DEFAULT_LOC, source: 'Default' };
+      // Fallback to network
+      try {
+        Logger.loc('📡 Trying network location...');
+        const pos = await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error('Timeout')), 8000);
+          Geolocation.getCurrentPosition(
+            res => { clearTimeout(timeout); resolve(res); },
+            err => { clearTimeout(timeout); reject(err); },
+            { enableHighAccuracy: false, timeout: 8000, maximumAge: 30000 });
+        });
+        if (validLL(pos.coords.latitude, pos.coords.longitude)) {
+          Logger.info('LOC', `📡 Network: ${pos.coords.latitude.toFixed(6)}, ${pos.coords.longitude.toFixed(6)} ±${pos.coords.accuracy?.toFixed(0)}m`);
+          setLocationSource(`Network ±${pos.coords.accuracy?.toFixed(0)}m`);
+          return { 
+            latitude: pos.coords.latitude, 
+            longitude: pos.coords.longitude, 
+            accuracy: pos.coords.accuracy, 
+            source: 'Network' 
+          };
+        }
+      } catch (e) { 
+        Logger.warn('LOC', 'Network location failed', e.message); 
+      }
+
+      // Fallback to cached
+      try {
+        Logger.loc('💾 Trying cached location...');
+        const pos = await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error('Timeout')), 3000);
+          Geolocation.getCurrentPosition(
+            res => { clearTimeout(timeout); resolve(res); },
+            err => { clearTimeout(timeout); reject(err); },
+            { enableHighAccuracy: false, timeout: 3000, maximumAge: 600000 });
+        });
+        if (validLL(pos.coords.latitude, pos.coords.longitude)) {
+          Logger.info('LOC', `💾 Cached: ${pos.coords.latitude.toFixed(6)}, ${pos.coords.longitude.toFixed(6)}`);
+          setLocationSource(`Cached ±${pos.coords.accuracy?.toFixed(0)}m`);
+          return { 
+            latitude: pos.coords.latitude, 
+            longitude: pos.coords.longitude, 
+            accuracy: pos.coords.accuracy, 
+            source: 'Cached' 
+          };
+        }
+      } catch (_) {}
+
+      Logger.warn('LOC', 'All location methods failed, using default');
+      setLocationSource('Default');
+      return {...DEFAULT_LOC, source: 'Default'};
     } finally {
       setGettingLoc(false);
     }
   }, []);
 
-  /* ───────── Storage ───────── */
-  const saveMySpot = useCallback(async (spot) => {
-    await AsyncStorage.setItem(STORAGE_KEYS.MY_SPOT, JSON.stringify(spot));
-    setMySpot(spot);
-  }, []);
+  // ═════════════════════════════════════════════════════════════
+  // ✅ FIXED: UPDATE MARKER POSITION (with route snapping)
+  // ═════════════════════════════════════════════════════════════
+  const updateMarkerPosition = useCallback((lat, lng, forceRaw = false) => {
+    const now = Date.now();
+    const minInterval = isNavigatingRef.current ? 150 : 100;
+    if (now - lastMarkerUpdateRef.current < minInterval) return;
+    lastMarkerUpdateRef.current = now;
 
-  const loadSpots = useCallback(async (location) => {
-    const mySpotStr = await AsyncStorage.getItem(STORAGE_KEYS.MY_SPOT);
-    let savedMySpot = null;
-    if (mySpotStr) {
-      try { savedMySpot = JSON.parse(mySpotStr); } catch {}
+    Logger.verbose('MARKER', `📍 Raw GPS: ${lat.toFixed(6)}, ${lng.toFixed(6)}`);
+
+    // ✅ FIX PROBLEM 1: Snap to route during navigation
+    if (isNavigatingRef.current && routeCoordinatesRef.current && routeCoordinatesRef.current.length > 1 && !forceRaw) {
+      const userLoc = { latitude: lat, longitude: lng };
+      const snapped = snapUserToRoute(userLoc, routeCoordinatesRef.current);
+      
+      if (snapped && snapped.snappedDistance < 50) {
+        // Use snapped position
+        const snappedCoord = [snapped.longitude, snapped.latitude];
+        snappedUserCoordRef.current = snappedCoord;
+        setSnappedUserCoord(snappedCoord);
+        
+        userMarkerCoordRef.current = snappedCoord;
+        setUserMarkerCoord(snappedCoord);
+        
+        Logger.loc(`🎯 SNAPPED to route: ${snapped.latitude.toFixed(6)}, ${snapped.longitude.toFixed(6)} (off by ${snapped.snappedDistance.toFixed(1)}m)`);
+        return;
+      } else {
+        Logger.warn('MARKER', `⚠️ Not snapping - too far: ${snapped?.snappedDistance?.toFixed(1) || 'N/A'}m`);
+      }
     }
-    setMySpot(savedMySpot);
 
-    const demoSpots = generateDemoSpots(location.latitude, location.longitude);
-    let combined = [...demoSpots];
-    if (savedMySpot) combined.push({ ...savedMySpot, isMySpot: true });
-
-    combined = combined.map((spot) => ({
-      ...spot,
-      distance: calcDistance(location.latitude, location.longitude, spot.latitude, spot.longitude),
-    }));
-
-    combined.sort((a, b) => a.distance - b.distance);
-    setAllSpots(combined);
+    // Use raw GPS if not navigating or snapping failed
+    const newCoord = [lng, lat];
+    userMarkerCoordRef.current = newCoord;
+    setUserMarkerCoord(newCoord);
+    snappedUserCoordRef.current = null;
+    setSnappedUserCoord(null);
+    
+    Logger.verbose('MARKER', `📍 Using raw GPS: ${lat.toFixed(6)}, ${lng.toFixed(6)}`);
   }, []);
 
-  /* ───────── Stats ───────── */
-  const updateRouteStats = useCallback(() => {
-    const stats = RoutingService.getStats();
-    setRouteStats(stats);
-  }, []);
-
-  const showRouteStats = useCallback(() => {
-    const stats = RoutingService.getStats();
-    Alert.alert(
-      '📊 Backend Stats (No Cache)',
-      `🌐 Backend: ${BACKEND_CONFIG.baseUrl.split('//')[1].substring(0, 30)}...\n\n` +
-      `📡 Total Requests: ${stats.totalRequests}\n` +
-      `✅ Successful: ${stats.successfulRequests}\n` +
-      `❌ Failed: ${stats.failedRequests}\n` +
-      `💬 Last Message: ${stats.lastMessage || 'N/A'}\n\n` +
-      `⚡ Cache: DISABLED (Always fresh)`,
-      [{ text: 'OK' }]
-    );
-  }, []);
-
-  /* ───────── Init ───────── */
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      const loc = await getLoc();
-      if (!mounted) return;
-      setUserLoc(loc);
-      await loadSpots(loc);
-      setLoading(false);
-
-      setTimeout(() => {
-        webRef.current?.injectJavaScript(`
-          window.setUserLocation && window.setUserLocation(${loc.latitude}, ${loc.longitude}, true);
-          true;
-        `);
-      }, 500);
-    })();
-    return () => { mounted = false; };
-  }, [getLoc, loadSpots]);
-
-  /* ───────── Map HTML ───────── */
-  const mapHtml = useMemo(() => {
-    const lat = userLoc.latitude;
-    const lng = userLoc.longitude;
-
-    const spotsMarkersJS = allSpots.map((spot) => {
-      const color = spot.isMySpot ? '#1976D2' : spot.isOccupied ? '#E53935' : '#4CAF50';
-      const icon = spot.isMySpot ? '🚗' : spot.isOccupied ? '🅿️' : '✓';
-
-      return `
-        (function() {
-          var spotData = {
-            id: "${spot.id}",
-            latitude: ${spot.latitude},
-            longitude: ${spot.longitude},
-            isOccupied: ${spot.isOccupied ? 'true' : 'false'},
-            isMySpot: ${spot.isMySpot ? 'true' : 'false'},
-            deviceName: "${spot.deviceName || 'Unknown'}",
-            userId: "${spot.userId || ''}",
-            createdAt: ${spot.createdAt || Date.now()},
-            distance: ${spot.distance || 0}
-          };
-          
-          var markerIcon = L.divIcon({
-            className: 'custom-marker',
-            html: '<div style="width:40px;height:48px;background:${color};border-radius:50% 50% 50% 50%/60% 60% 40% 40%;border:3px solid #fff;box-shadow:0 4px 15px rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px;padding-bottom:6px;cursor:pointer;">${icon}</div>',
-            iconSize: [40, 48],
-            iconAnchor: [20, 48]
-          });
-
-          var marker = L.marker([${spot.latitude}, ${spot.longitude}], {icon: markerIcon}).addTo(map);
-          ${spot.isMySpot ? `mySpotMarker = marker; mySpotLatLng = [${spot.latitude}, ${spot.longitude}];` : ''}
-
-          marker.on('click', function(e) {
-            window.ReactNativeWebView.postMessage(JSON.stringify({
-              type: 'spotClick',
-              spot: spotData
-            }));
-          });
-        })();
-      `;
-    }).join('\n');
-
-    return `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { height: 100%; width: 100%; overflow: hidden; }
-    #map { height: 100%; width: 100%; background: #E8E8E8; }
-    .leaflet-control-attribution { background: rgba(255,255,255,0.8) !important; font-size: 10px !important; }
-    .custom-marker { cursor: pointer !important; }
-    #loading-overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(255,255,255,0.95); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 9999; }
-    #loading-overlay.hidden { display: none; }
-    .loader { width: 50px; height: 50px; border: 4px solid #f3f3f3; border-top: 4px solid #E53935; border-radius: 50%; animation: spin 1s linear infinite; }
-    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-  </style>
-</head>
-<body>
-  <div id="loading-overlay"><div class="loader"></div></div>
-  <div id="map"></div>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script>
-    function hideLoading() { document.getElementById('loading-overlay').classList.add('hidden'); }
-
-    var map = L.map('map', { zoomControl: false, attributionControl: true }).setView([${lat}, ${lng}], 16);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
-
-    var userLat = ${lat}, userLng = ${lng};
-    var userMarker = null, mySpotMarker = null, mySpotLatLng = null;
-    var routeLine = null, routeBorder = null, searchMarker = null;
-
-    var userIcon = L.divIcon({
-      className: '',
-      html: '<div style="width:22px;height:22px;border-radius:50%;background:linear-gradient(135deg,#E53935,#C62828);border:4px solid #fff;box-shadow:0 2px 10px rgba(229,57,53,0.4),0 0 0 8px rgba(229,57,53,0.15);"></div>',
-      iconSize: [22, 22], iconAnchor: [11, 11]
-    });
-    userMarker = L.marker([userLat, userLng], {icon: userIcon, zIndexOffset: 1000}).addTo(map);
-
-    ${spotsMarkersJS}
-
-    window.setUserLocation = function(lat, lng, moveCamera) {
-      userLat = lat; userLng = lng;
-      if (userMarker) userMarker.setLatLng([lat, lng]);
-      if (moveCamera) map.flyTo([lat, lng], 16, { duration: 0.8 });
-    };
-
-    window.zoomIn = function() { map.zoomIn(); };
-    window.zoomOut = function() { map.zoomOut(); };
-
-    window.panTo = function(lat, lng, zoom) {
-      if (searchMarker) { map.removeLayer(searchMarker); searchMarker = null; }
-      map.flyTo([lat, lng], zoom || 16, { duration: 0.8 });
-      var pin = L.divIcon({ className: '', html: '<div style="width:18px;height:18px;border-radius:50%;background:#111;border:3px solid #fff;"></div>', iconSize: [18, 18], iconAnchor: [9, 9] });
-      searchMarker = L.marker([lat, lng], {icon: pin}).addTo(map);
-    };
-
-    window.clearRoute = function() {
-      if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
-      if (routeBorder) { map.removeLayer(routeBorder); routeBorder = null; }
-    };
-
-    window.setMySpot = function(lat, lng) {
-      mySpotLatLng = [lat, lng];
-      if (mySpotMarker) { map.removeLayer(mySpotMarker); mySpotMarker = null; }
-      var spotIcon = L.divIcon({ className: '', html: '<div style="width:40px;height:48px;background:#1976D2;border-radius:50% 50% 50% 50%/60% 60% 40% 40%;border:3px solid #fff;box-shadow:0 4px 15px rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px;">🚗</div>', iconSize: [40, 48], iconAnchor: [20, 48] });
-      mySpotMarker = L.marker([lat, lng], {icon: spotIcon}).addTo(map);
-    };
-
-    window.showRoute = function(destLat, destLng) {
-      window.clearRoute();
-      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'fetchRoute', startLat: userLat, startLng: userLng, destLat: destLat, destLng: destLng }));
-    };
-
-    window.handleRouteData = function(data) {
-      if (!data || !data.coordinates) return;
-      var latlngs = data.coordinates.map(function(c) { return [c[1], c[0]]; });
-      routeBorder = L.polyline(latlngs, { color: '#fff', weight: 10, opacity: 0.6 }).addTo(map);
-      routeLine = L.polyline(latlngs, { color: '#E53935', weight: 6, opacity: 0.9 }).addTo(map);
-      map.fitBounds(routeLine.getBounds(), { padding: [60, 60], maxZoom: 17 });
-    };
-
-    map.whenReady(function() { setTimeout(function() { hideLoading(); window.ReactNativeWebView.postMessage(JSON.stringify({type: 'ready'})); }, 500); });
-  </script>
-</body>
-</html>`;
-  }, [userLoc, allSpots]);
-
-  /* ───────── Process Navigation ───────── */
-  const processNavigationSteps = useCallback((routeData) => {
+  // ═════════════════════════════════════════════════════════════
+  // CAMERA CONTROLS
+  // ═════════════════════════════════════════════════════════════
+  const flyTo = useCallback((lat, lng, zoom = 16, force = false) => {
+    const now = Date.now();
+    if (!force && now - lastCameraUpdateRef.current < 500) return;
+    const z = Math.min(zoom, 18);
+    Logger.camera(`🛫 flyTo: ${lat.toFixed(6)}, ${lng.toFixed(6)} zoom=${z}`);
     try {
-      const route = routeData.routes[0];
-      const steps = [];
-      let n = 1;
-
-      // If backend provides steps in legs
-      if (route.legs && route.legs.length > 0) {
-        route.legs.forEach((leg) => {
-          if (leg.steps && leg.steps.length > 0) {
-            leg.steps.forEach((step) => {
-              const m = step.maneuver || {};
-              steps.push({
-                id: String(n),
-                stepNumber: n,
-                icon: getManeuverIcon(m.type, m.modifier),
-                instruction: getManeuverInstruction(m.type, m.modifier, sanitizeStreetName(step.name), step.distance),
-                distance: step.distance,
-                duration: step.duration,
-                streetName: sanitizeStreetName(step.name),
-                maneuverType: m.type,
-              });
-              n++;
-            });
-          }
-        });
-      }
-
-      // If no steps, create basic start/end steps
-      if (steps.length === 0) {
-        steps.push({
-          id: '1',
-          stepNumber: 1,
-          icon: '🚀',
-          instruction: 'Start your journey',
-          distance: route.distance || 0,
-          duration: route.duration || 0,
-          streetName: '',
-          maneuverType: 'depart',
-        });
-        steps.push({
-          id: '2',
-          stepNumber: 2,
-          icon: '🎯',
-          instruction: 'You have arrived at your destination',
-          distance: 0,
-          duration: 0,
-          streetName: '',
-          maneuverType: 'arrive',
-        });
-      }
-
-      setNavigationSteps(steps);
-      setRouteInfo({ 
-        totalDistance: route.distance, 
-        totalDuration: route.duration, 
-        stepsCount: steps.length 
+      cameraRef.current?.setCamera({
+        centerCoordinate: [lng, lat], zoomLevel: z,
+        animationDuration: 600, animationMode: 'flyTo',
       });
-    } catch (e) {
-      console.log('[NAV] Process steps error:', e.message);
-      setNavigationSteps([]);
-      setRouteInfo(null);
+      lastCameraUpdateRef.current = Date.now();
+      setZoomLevel(z);
+    } catch (error) {
+      Logger.error('CAMERA', 'flyTo failed', error);
     }
   }, []);
 
-  /* ───────── WebView Message Handler ───────── */
-  const onWebMessage = useCallback(async (event) => {
+  const fitBounds = useCallback((coords, padding = [100, 100, 100, 100]) => {
+    if (!coords || coords.length < 2 || !cameraRef.current) {
+      Logger.warn('CAMERA', 'fitBounds: invalid coords or no camera ref');
+      return;
+    }
     try {
-      const data = JSON.parse(event.nativeEvent.data);
+      const lngs = coords.map(c => c[0]);
+      const lats = coords.map(c => c[1]);
+      cameraRef.current.fitBounds(
+        [Math.max(...lngs), Math.max(...lats)],
+        [Math.min(...lngs), Math.min(...lats)],
+        padding, 1000);
+      Logger.camera('📐 fitBounds applied');
+    } catch (error) {
+      Logger.error('CAMERA', 'fitBounds failed', error);
+    }
+  }, []);
 
-      if (data.type === 'ready') return;
+  // ═══════════════════════════════════════════════════════════
+  // CLEAR WATCHES
+  // ═══════════════════════════════════════════════════════════
+  const clearNavigationWatch = useCallback(() => {
+    Logger.loc('🛑 clearNavigationWatch called');
+    if (locationWatchId.current !== null) {
+      try { 
+        Geolocation.clearWatch(locationWatchId.current); 
+        Logger.loc('✅ Navigation watch cleared');
+      } catch (e) {
+        Logger.error('LOC', 'clearWatch failed', e);
+      }
+      locationWatchId.current = null;
+    }
+    if (navIntervalRef.current) {
+      try {
+        clearInterval(navIntervalRef.current);
+        Logger.loc('✅ Nav interval cleared');
+      } catch (e) {
+        Logger.error('LOC', 'clearInterval failed', e);
+      }
+      navIntervalRef.current = null;
+    }
+  }, []);
 
-      if (data.type === 'spotClick') {
-        setSelectedSpot(data.spot);
-        setShowModal(true);
+  const clearPassiveWatch = useCallback(() => {
+    Logger.loc('🛑 clearPassiveWatch called');
+    if (passiveWatchId.current !== null) {
+      try { 
+        Geolocation.clearWatch(passiveWatchId.current); 
+        Logger.loc('✅ Passive watch cleared');
+      } catch (e) {
+        Logger.error('LOC', 'clearPassiveWatch failed', e);
+      }
+      passiveWatchId.current = null;
+    }
+  }, []);
+
+  // ═══════════════════════════════════════════════════════════
+  // PASSIVE TRACKING
+  // ═══════════════════════════════════════════════════════════
+  const doStartPassiveTracking = useCallback(() => {
+    if (!isMountedRef.current || isNavigatingRef.current) {
+      Logger.verbose('LOC', 'Skipping passive tracking - conditions not met');
+      return;
+    }
+    clearPassiveWatch();
+    Logger.loc('📍 ═══ STARTING PASSIVE TRACKING ═══');
+
+    try {
+      passiveWatchId.current = Geolocation.watchPosition(
+        pos => {
+          if (!isMountedRef.current || isNavigatingRef.current) return;
+          const {latitude, longitude, accuracy, heading, speed} = pos.coords;
+          
+          if (!validLL(latitude, longitude) || accuracy > 200) {
+            Logger.verbose('LOC', `Passive: rejected (invalid or accuracy=${accuracy?.toFixed(0)}m)`);
+            return;
+          }
+
+          const newLoc = {latitude, longitude};
+          if (lastLocationRef.current) {
+            const moved = calcDistance(lastLocationRef.current.latitude, lastLocationRef.current.longitude, latitude, longitude);
+            if (moved < 3) return;
+          }
+
+          Logger.loc(`📍 Passive update: ${latitude.toFixed(6)}, ${longitude.toFixed(6)} ±${accuracy?.toFixed(0)}m`);
+
+          // Update location source
+          if (accuracy <= 50) setLocationSource(`GPS ±${accuracy.toFixed(0)}m`);
+          else if (accuracy <= 100) setLocationSource(`Network ±${accuracy.toFixed(0)}m`);
+          else setLocationSource(`Low ±${accuracy.toFixed(0)}m`);
+
+          lastLocationRef.current = newLoc;
+          setUserLoc(newLoc);
+          updateMarkerPosition(latitude, longitude, true);
+          setLocationAccuracy(accuracy || 0);
+          if (heading !== null && !isNaN(heading) && heading >= 0) setUserHeading(heading);
+          if (speed !== null && !isNaN(speed) && speed >= 0) gpsSpeedRef.current = speed;
+        },
+        err => Logger.error('LOC', 'Passive watch error', err),
+        LOCATION_TRACKING_CONFIG.PASSIVE
+      );
+      
+      Logger.success('LOC', '✅ Passive tracking started');
+    } catch (error) {
+      Logger.error('LOC', 'Failed to start passive tracking', error);
+    }
+  }, [clearPassiveWatch, updateMarkerPosition]);
+
+  // ═══════════════════════════════════════════════════════════
+  // ✅ FIXED: FULL CLEANUP (Prevents Problem 2 & 3 crashes)
+  // ═══════════════════════════════════════════════════════════
+  const doFullCleanup = useCallback(async () => {
+    // ✅ Prevent double cleanup
+    if (isCleaningUpRef.current) {
+      Logger.warn('CLEANUP', '⚠️ Cleanup already in progress, skipping');
+      return;
+    }
+    
+    isCleaningUpRef.current = true;
+    Logger.info('CLEANUP', '🧹 ═══ FULL CLEANUP STARTED ═══');
+
+    try {
+      // ✅ Step 1: Set flags FIRST (prevents state updates during cleanup)
+      isNavigatingRef.current = false;
+      followUserRef.current = false;
+      hasActiveRouteRef.current = false;
+      isStoppingRef.current = true;
+      rerouteCountRef.current = 0;
+      gpsSpeedRef.current = 0;
+      totalDistanceRef.current = 0;
+      totalDurationRef.current = 0;
+      smoothedHeadingRef.current = 0;
+
+      Logger.verbose('CLEANUP', '✅ Refs reset');
+
+      // ✅ Step 2: Clear watches
+      clearNavigationWatch();
+      Logger.verbose('CLEANUP', '✅ Navigation watch cleared');
+
+      // ✅ Step 3: Safe cleanup of services
+      await SafeCleanup.cleanupNavigation();
+      Logger.verbose('CLEANUP', '✅ Services cleaned');
+
+      // ✅ Step 4: Clear state (only if mounted)
+      if (isMountedRef.current) {
+        Logger.verbose('CLEANUP', '🔄 Clearing state...');
+        
+        // ✅ IMPORTANT: Clear route coordinates BEFORE setting isNavigating
+        routeCoordinatesRef.current = null;
+        setRouteCoordinates(null);
+        setNavigationSteps([]);
+        setRouteInfo(null);
+        setDestination(null);
+        setSearchMarker(null);
+        
+        // Small delay to let route clear first
+        await new Promise(resolve => setTimeout(resolve, 50));
+        
+        setIsNavigating(false);
+        setFollowUser(false);
+        setCurrentStepIndex(0);
+        setDistanceToNextStep(0);
+        setNavigationProgress(0);
+        setRemainingDistance(0);
+        setRemainingDuration(0);
+        setSnappedUserCoord(null);
+        snappedUserCoordRef.current = null;
+        
+        Logger.verbose('CLEANUP', '✅ State cleared');
+      }
+
+      // ✅ Step 5: Reset camera
+      try { 
+        cameraRef.current?.setCamera({pitch: 0, animationDuration: 500}); 
+        Logger.verbose('CLEANUP', '✅ Camera reset');
+      } catch (e) {
+        Logger.error('CLEANUP', 'Camera reset failed', e);
+      }
+
+      Logger.success('CLEANUP', '🧹 ═══ FULL CLEANUP COMPLETED ═══');
+    } catch (error) {
+      Logger.error('CLEANUP', '❌ Cleanup error', error);
+    } finally {
+      isCleaningUpRef.current = false;
+      isStoppingRef.current = false;
+    }
+  }, [clearNavigationWatch]);
+
+  // ═══════════════════════════════════════════════════════════
+  // ✅ FIXED: HANDLE ARRIVAL (Prevents Problem 2 crash)
+  // ═══════════════════════════════════════════════════════════
+  const handleArrival = useCallback(async () => {
+    Logger.success('NAV', '🎉 ═══ HANDLING ARRIVAL ═══');
+    
+    // ✅ Prevent multiple calls
+    if (!isNavigatingRef.current || isStoppingRef.current || isCleaningUpRef.current) {
+      Logger.warn('NAV', '⚠️ Already handling arrival or not navigating');
+      return;
+    }
+
+    // ✅ Set flag immediately
+    isNavigatingRef.current = false;
+    isStoppingRef.current = true;
+    
+    try {
+      // ✅ Announce arrival
+      try { 
+        VoiceGuidance.announceArrival(); 
+        Logger.verbose('NAV', '✅ Arrival announced');
+      } catch (e) {
+        Logger.error('NAV', 'Announce arrival failed', e);
+      }
+
+      // ✅ Clear navigation watch
+      clearNavigationWatch();
+      Logger.verbose('NAV', '✅ Watch cleared');
+
+      // ✅ Stop services
+      try { VoiceGuidance.stop(); } catch (_) {}
+      try { stepTracker.reset(); } catch (_) {}
+      
+      // ✅ Update state (keep route visible for now)
+      if (isMountedRef.current) { 
+        setIsNavigating(false); 
+        setFollowUser(false);
+        setNavigationProgress(1);
+        Logger.verbose('NAV', '✅ Navigation state updated');
+      }
+
+      // ✅ Reset camera
+      try { 
+        cameraRef.current?.setCamera({pitch: 0, animationDuration: 500}); 
+      } catch (_) {}
+
+      Logger.success('NAV', '🎉 Arrival handling complete - showing alert');
+      
+      // ✅ Show alert AFTER state updates
+      setTimeout(() => {
+        if (isMountedRef.current) {
+          Alert.alert(
+            '🎉 You Have Arrived!', 
+            'You have reached your destination.',
+            [{
+              text: 'OK',
+              onPress: () => {
+                Logger.info('NAV', '👆 User pressed OK - cleaning up');
+                setTimeout(async () => {
+                  if (isMountedRef.current) {
+                    await doFullCleanup();
+                    setTimeout(() => {
+                      if (isMountedRef.current) {
+                        doStartPassiveTracking();
+                      }
+                    }, 300);
+                  }
+                }, 100);
+              },
+            }]
+          );
+        }
+      }, 100);
+      
+    } catch (error) {
+      Logger.error('NAV', '❌ Arrival handling error', error);
+    } finally {
+      isStoppingRef.current = false;
+    }
+  }, [clearNavigationWatch, doFullCleanup, doStartPassiveTracking]);
+
+  // ═══════════════════════════════════════════════════════════
+  // ✅ FIXED: STOP NAVIGATION (Prevents Problem 3 crash)
+  // ═══════════════════════════════════════════════════════════
+  const stopNavigation = useCallback(async () => {
+    Logger.nav('⏹️ ═══ STOP NAVIGATION CALLED ═══');
+    
+    // ✅ Prevent multiple calls
+    if (isStoppingRef.current || isCleaningUpRef.current) {
+      Logger.warn('NAV', '⚠️ Already stopping/cleaning, skipping');
+      return;
+    }
+    
+    isStoppingRef.current = true;
+    
+    try {
+      // ✅ Step 1: Set flags immediately
+      isNavigatingRef.current = false;
+      followUserRef.current = false;
+      smoothedHeadingRef.current = 0;
+      
+      Logger.verbose('NAV', '✅ Flags set');
+
+      // ✅ Step 2: Clear location tracking
+      clearNavigationWatch();
+      Logger.verbose('NAV', '✅ Watch cleared');
+
+      // ✅ Step 3: Stop services (with try-catch)
+      try { VoiceGuidance.stop(); } catch (e) { Logger.error('NAV', 'Voice stop failed', e); }
+      try { stepTracker.reset(); } catch (e) { Logger.error('NAV', 'StepTracker reset failed', e); }
+      try { locationProcessor.reset(); } catch (e) { Logger.error('NAV', 'LocationProcessor reset failed', e); }
+      
+      Logger.verbose('NAV', '✅ Services stopped');
+
+      // ✅ Step 4: Clear route state FIRST (prevents render errors)
+      if (isMountedRef.current) {
+        Logger.verbose('NAV', '🔄 Clearing route state...');
+        
+        // Clear route BEFORE navigation state
+        routeCoordinatesRef.current = null;
+        setRouteCoordinates(null);
+        setDestination(null);
+        setNavigationSteps([]);
+        setRouteInfo(null);
+        
+        // Wait for state to update
+        await new Promise(resolve => setTimeout(resolve, 50));
+        
+        // Now clear navigation state
+        setIsNavigating(false);
+        setFollowUser(false);
+        setCurrentStepIndex(0);
+        setDistanceToNextStep(0);
+        setNavigationProgress(0);
+        setRemainingDistance(0);
+        setRemainingDuration(0);
+        setSnappedUserCoord(null);
+        snappedUserCoordRef.current = null;
+        
+        Logger.verbose('NAV', '✅ State cleared');
+      }
+
+      // ✅ Step 5: Clear route manager
+      try { 
+        routeLineManager.clear(); 
+        Logger.verbose('NAV', '✅ RouteLineManager cleared');
+      } catch (e) {
+        Logger.error('NAV', 'RouteLineManager clear failed', e);
+      }
+
+      // ✅ Step 6: Reset camera
+      try { 
+        cameraRef.current?.setCamera({pitch: 0, animationDuration: 500}); 
+        Logger.verbose('NAV', '✅ Camera reset');
+      } catch (e) {
+        Logger.error('NAV', 'Camera reset failed', e);
+      }
+      
+      hasActiveRouteRef.current = false;
+      Logger.success('NAV', '⏹️ ═══ NAVIGATION STOPPED SUCCESSFULLY ═══');
+
+      // ✅ Step 7: Restart passive tracking (delayed)
+      setTimeout(() => {
+        if (isMountedRef.current && !isNavigatingRef.current) {
+          Logger.loc('🔄 Restarting passive tracking...');
+          doStartPassiveTracking();
+        }
+      }, 500);
+      
+    } catch (error) {
+      Logger.error('NAV', '❌ Stop navigation error', error);
+    } finally {
+      isStoppingRef.current = false;
+    }
+  }, [clearNavigationWatch, doStartPassiveTracking]);
+
+  // ═══════════════════════════════════════════════════════════
+  // REROUTE
+  // ═══════════════════════════════════════════════════════════
+  const reroute = useCallback(async currentLoc => {
+    const dest = destination;
+    if (!dest || reroutingRef.current || !isNavigatingRef.current) {
+      Logger.verbose('REROUTE', 'Skipping - conditions not met');
+      return;
+    }
+    
+    const now = Date.now();
+    if (now - lastRerouteTimeRef.current < NAV_CONFIG.REROUTE_COOLDOWN) {
+      Logger.verbose('REROUTE', 'Skipping - cooldown active');
+      return;
+    }
+    
+    if (rerouteCountRef.current >= NAV_CONFIG.MAX_REROUTES) {
+      Logger.warn('NAV', `Max reroutes (${NAV_CONFIG.MAX_REROUTES}) reached`);
+      return;
+    }
+
+    reroutingRef.current = true;
+    lastRerouteTimeRef.current = now;
+    rerouteCountRef.current++;
+    Logger.nav(`🔄 ═══ REROUTING #${rerouteCountRef.current} ═══`);
+    
+    try { VoiceGuidance.announceRerouting(); } catch (_) {}
+
+    try {
+      RouteCache._cache.delete(RouteCache.key(currentLoc.latitude, currentLoc.longitude, dest.latitude, dest.longitude));
+      const routeData = await RoutingService.fetchRoute(currentLoc.latitude, currentLoc.longitude, dest.latitude, dest.longitude);
+      
+      if (!isNavigatingRef.current || !isMountedRef.current) {
+        Logger.warn('REROUTE', 'Navigation cancelled during reroute');
         return;
       }
 
-      if (data.type === 'fetchRoute') {
-        setRouteLoading(true);
-        const startTime = Date.now();
+      const route = routeData.routes[0];
+      const coords = route.geometry.coordinates;
+      const steps = route.steps || [];
 
+      routeLineManager.setFullRoute(coords, dest);
+      stepTracker.setSteps(steps);
+      totalDistanceRef.current = route.distance;
+      totalDurationRef.current = route.duration;
+      routeCoordinatesRef.current = coords;
+
+      setRouteCoordinates(coords);
+      setNavigationSteps(steps);
+      setRouteInfo({ totalDistance: route.distance, totalDuration: route.duration, stepsCount: steps.length });
+      setRemainingDistance(route.distance);
+      setRemainingDuration(route.duration);
+      setCurrentStepIndex(0);
+      setNavigationProgress(0);
+      
+      Logger.success('NAV', `✅ Reroute complete: ${coords.length} pts, ${steps.length} steps`);
+    } catch (e) { 
+      Logger.error('NAV', 'Reroute failed', e); 
+    } finally { 
+      reroutingRef.current = false; 
+    }
+  }, [destination]);
+
+  // ═══════════════════════════════════════════════════════════════
+  // ✅ FIXED: ROUTE VISUAL UPDATER (calls handleArrival)
+  // ═══════════════════════════════════════════════════════════════
+  const updateRouteVisual = useCallback(currentLoc => {
+    // ✅ Safety checks
+    if (!isMountedRef.current || !currentLoc || isStoppingRef.current || isCleaningUpRef.current) {
+      Logger.verbose('ROUTE', 'Skipping update - safety check failed');
+      return;
+    }
+
+    const fullRoute = routeLineManager.getFullRoute();
+    if (!fullRoute) {
+      Logger.verbose('ROUTE', 'Skipping update - no route');
+      return;
+    }
+
+    const now = Date.now();
+    if (now - lastRouteUpdateRef.current < 300) return;
+    lastRouteUpdateRef.current = now;
+
+    // ✅ Check arrival FIRST
+    if (routeLineManager.hasArrived(currentLoc)) {
+      Logger.success('NAV', '🎉 ARRIVAL DETECTED!');
+      handleArrival();
+      return;
+    }
+
+    // ✅ Update visible route
+    const visibleRoute = routeLineManager.getVisibleRoute(currentLoc);
+    if (!visibleRoute) {
+      Logger.verbose('ROUTE', 'No visible route returned');
+      return;
+    }
+
+    if (visibleRoute.changed && isMountedRef.current && !isStoppingRef.current) {
+      Logger.route(
+        `📏 Route updated: remaining=${visibleRoute.remainingDistance.toFixed(0)}m | ` +
+        `progress=${(visibleRoute.progress * 100).toFixed(1)}% | ` +
+        `pts=${visibleRoute.coordinates.length} | ` +
+        `offRoute=${visibleRoute.offRouteDistance.toFixed(1)}m`
+      );
+
+      routeCoordinatesRef.current = visibleRoute.coordinates;
+      setRouteCoordinates(visibleRoute.coordinates);
+      setRemainingDistance(visibleRoute.remainingDistance);
+      setNavigationProgress(visibleRoute.progress);
+
+      const remainingTime = estimateRemainingTime(
+        visibleRoute.remainingDistance, totalDistanceRef.current,
+        totalDurationRef.current, gpsSpeedRef.current);
+      setRemainingDuration(remainingTime);
+
+      setRouteInfo(prev => prev ? {
+        ...prev, 
+        remainingDistance: visibleRoute.remainingDistance, 
+        remainingDuration: remainingTime,
+      } : prev);
+    }
+
+    // ✅ Update steps and check off-route
+    if (isNavigatingRef.current && !isStoppingRef.current && !isCleaningUpRef.current) {
+      if (routeLineManager.isOffRoute(currentLoc)) {
+        Logger.warn('NAV', '⚠️ Off route detected, rerouting...');
+        reroute(currentLoc);
+        return;
+      }
+
+      try {
+        const stepResult = stepTracker.update(currentLoc);
+        if (stepResult.changed && isMountedRef.current) {
+          Logger.nav(`📍 Step advanced: ${stepTracker.currentIndex + 1}/${navigationSteps.length}`);
+          setCurrentStepIndex(stepTracker.currentIndex);
+        }
+        if (isMountedRef.current) {
+          setDistanceToNextStep(stepResult.distanceToStep);
+        }
+      } catch (e) {
+        Logger.error('ROUTE', 'Step update failed', e);
+      }
+    }
+  }, [reroute, handleArrival, navigationSteps.length]);
+
+  // ═══════════════════════════════════════════════════════════
+  // CHECK LOCATION ENABLED
+  // ═══════════════════════════════════════════════════════════
+  const checkLocationEnabled = useCallback(async () => {
+    Logger.loc('🔍 Checking if location is enabled...');
+    if (Platform.OS === 'android') {
+      try {
+        const enabled = await new Promise((resolve) => {
+          Geolocation.getCurrentPosition(
+            () => { Logger.loc('✅ Location enabled'); resolve(true); },
+            () => { Logger.warn('LOC', '❌ Location disabled'); resolve(false); },
+            { timeout: 3000 }
+          );
+        });
+        
+        if (!enabled) {
+          Alert.alert(
+            '📍 Location Disabled',
+            'Please enable location services for accurate navigation.',
+            [
+              { text: 'Cancel' },
+              { text: 'Settings', onPress: () => Linking.openSettings() }
+            ]
+          );
+          return false;
+        }
+        return true;
+      } catch (_) {
+        return true;
+      }
+    }
+    return true;
+  }, []);
+
+  // ═══════════════════════════════════════════════════════════
+  // ✅ IMPROVED NAVIGATION TRACKING v5.4
+  // ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
+// ✅ FIXED: NAVIGATION TRACKING v5.5 - LOCATION FIX
+// ═══════════════════════════════════════════════════════════
+const startLocationTracking = useCallback(() => {
+  Logger.loc('🧭 ═══ STARTING NAVIGATION TRACKING v5.5 ═══');
+  
+  clearPassiveWatch();
+  clearNavigationWatch();
+  
+  if (navIntervalRef.current) {
+    clearInterval(navIntervalRef.current);
+    navIntervalRef.current = null;
+  }
+  
+  // Reset location processor
+  locationProcessor.reset();
+
+  let navUpdateCount = 0;
+  let lastLogTime = 0;
+  let lastLocationTime = Date.now();
+  let watchWorking = false;
+  let fallbackActive = false;
+
+  // ✅ UNIFIED LOCATION PROCESSOR
+  const processLocation = (latitude, longitude, accuracy, heading, speed, source) => {
+    if (!isMountedRef.current || isStoppingRef.current || isCleaningUpRef.current) {
+      Logger.verbose('LOC', 'Skipping - stopping/cleaning');
+      return;
+    }
+    
+    // Basic validation
+    if (!validLL(latitude, longitude)) {
+      Logger.warn('LOC', `Invalid coords from ${source}: ${latitude}, ${longitude}`);
+      return;
+    }
+
+    // Skip very bad accuracy
+    if (accuracy > 500) {
+      Logger.warn('LOC', `Very bad accuracy from ${source}: ±${accuracy?.toFixed(0)}m - skipping`);
+      return;
+    }
+    
+    const now = Date.now();
+    
+    // Throttle updates (min 500ms between updates)
+    if (now - lastLocationTime < 500 && navUpdateCount > 0) {
+      return;
+    }
+
+    navUpdateCount++;
+    lastLocationTime = now;
+    watchWorking = true;
+
+    const newLoc = {latitude, longitude};
+    
+    // Log with throttling
+    if (now - lastLogTime > 2000 || navUpdateCount <= 3) {
+      Logger.loc(
+        `🧭 Nav #${navUpdateCount} [${source}]: ` +
+        `${latitude.toFixed(6)}, ${longitude.toFixed(6)} ` +
+        `±${accuracy?.toFixed(0)}m` +
+        (speed ? ` speed=${speed.toFixed(1)}m/s` : '')
+      );
+      lastLogTime = now;
+    }
+
+    // ✅ Batch state updates
+    requestAnimationFrame(() => {
+      if (!isMountedRef.current || isStoppingRef.current) return;
+
+      lastLocationRef.current = newLoc;
+      
+      // ✅ This will snap to route during navigation!
+      updateMarkerPosition(latitude, longitude, false);
+
+      if (heading !== null && !isNaN(heading) && heading >= 0) {
+        setUserHeading(heading);
+      }
+      if (speed !== null && !isNaN(speed) && speed >= 0) {
+        gpsSpeedRef.current = speed;
+      }
+      
+      setLocationAccuracy(accuracy || 0);
+      setLocationSource(`Nav ±${accuracy?.toFixed(0)}m [${source}]`);
+
+      // Update route visual
+      if (isNavigatingRef.current && !isStoppingRef.current && !isCleaningUpRef.current) {
+        updateRouteVisual(newLoc);
+      }
+    });
+  };
+
+  // ═══════════════════════════════════════════════════════
+  // ✅ METHOD 1: watchPosition - TRY MULTIPLE CONFIGS
+  // ═══════════════════════════════════════════════════════
+  const startWatch = (configName, config) => {
+    try {
+      Logger.loc(`📡 Trying ${configName} config...`);
+      Logger.loc(`📡 Config: ${JSON.stringify(config)}`);
+      
+      locationWatchId.current = Geolocation.watchPosition(
+        pos => {
+          const {latitude, longitude, accuracy, heading, speed} = pos.coords;
+          Logger.verbose('LOC', `📡 Watch callback: ${latitude.toFixed(6)}, ${longitude.toFixed(6)} ±${accuracy?.toFixed(0)}m`);
+          processLocation(latitude, longitude, accuracy || 50, heading, speed, `WATCH-${configName}`);
+        },
+        err => {
+          Logger.error('LOC', `watchPosition [${configName}] error: ${err.message} (code: ${err.code})`);
+          watchWorking = false;
+        },
+        config
+      );
+      
+      Logger.success('LOC', `✅ watchPosition [${configName}] started`);
+      return true;
+    } catch (e) {
+      Logger.error('LOC', `Failed to start watchPosition [${configName}]`, e);
+      return false;
+    }
+  };
+
+  // ✅ TRY CONFIG 1: Standard (no forceLocationManager)
+  let watchStarted = startWatch('STANDARD', {
+    enableHighAccuracy: true,
+    distanceFilter: 5,
+    interval: 2000,
+    fastestInterval: 1000,
+    timeout: 20000,
+    maximumAge: 5000,
+    forceLocationManager: false,  // ✅ KEY FIX!
+    showLocationDialog: true,
+    forceRequestLocation: false,
+  });
+
+  // ═══════════════════════════════════════════════════════
+  // ✅ METHOD 2: FALLBACK with getCurrentPosition
+  // ═══════════════════════════════════════════════════════
+  const doFallbackFetch = () => {
+    if (!isMountedRef.current || !isNavigatingRef.current || isStoppingRef.current) return;
+    
+    Logger.loc('🔄 Fallback: fetching current position...');
+    
+    // Try high accuracy first
+    Geolocation.getCurrentPosition(
+      pos => {
+        const {latitude, longitude, accuracy, heading, speed} = pos.coords;
+        Logger.loc(`✅ Fallback HIGH: ${latitude.toFixed(6)}, ${longitude.toFixed(6)} ±${accuracy?.toFixed(0)}m`);
+        processLocation(latitude, longitude, accuracy || 50, heading, speed, 'FALLBACK-HIGH');
+      },
+      err => {
+        Logger.warn('LOC', `Fallback HIGH failed: ${err.message}`);
+        
+        // Try low accuracy
+        Geolocation.getCurrentPosition(
+          pos => {
+            const {latitude, longitude, accuracy, heading, speed} = pos.coords;
+            Logger.loc(`✅ Fallback LOW: ${latitude.toFixed(6)}, ${longitude.toFixed(6)} ±${accuracy?.toFixed(0)}m`);
+            processLocation(latitude, longitude, accuracy || 100, heading, speed, 'FALLBACK-LOW');
+          },
+          err2 => {
+            Logger.error('LOC', `Fallback LOW also failed: ${err2.message}`);
+          },
+          {
+            enableHighAccuracy: false,
+            timeout: 10000,
+            maximumAge: 30000,
+          }
+        );
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 15000,
+        maximumAge: 5000,
+      }
+    );
+  };
+
+  // ✅ Do first fallback immediately (don't wait for watch)
+  setTimeout(() => {
+    if (!watchWorking && isMountedRef.current && isNavigatingRef.current) {
+      Logger.warn('LOC', '⚠️ Watch not producing results, doing immediate fallback...');
+      doFallbackFetch();
+    }
+  }, 3000);
+
+  // ═══════════════════════════════════════════════════════
+  // ✅ METHOD 3: HEALTH MONITOR + PERIODIC FALLBACK
+  // ═══════════════════════════════════════════════════════
+  navIntervalRef.current = setInterval(() => {
+    if (!isMountedRef.current || !isNavigatingRef.current || isStoppingRef.current) {
+      return;
+    }
+
+    const timeSinceLastLocation = Date.now() - lastLocationTime;
+    
+    // If watch is not producing results for 5 seconds, use fallback
+    if (timeSinceLastLocation > 5000) {
+      if (!fallbackActive) {
+        Logger.warn('LOC', `⚠️ Watch silent for ${(timeSinceLastLocation/1000).toFixed(0)}s - activating fallback`);
+        fallbackActive = true;
+      }
+      
+      doFallbackFetch();
+      
+      // If watch has been dead for 30 seconds, try restarting it
+      if (timeSinceLastLocation > 30000 && !watchWorking) {
+        Logger.error('LOC', `❌ Watch dead for ${(timeSinceLastLocation/1000).toFixed(0)}s - restarting...`);
+        
+        // Clear old watch
+        if (locationWatchId.current !== null) {
+          try { Geolocation.clearWatch(locationWatchId.current); } catch(_) {}
+          locationWatchId.current = null;
+        }
+        
+        // Try different config
+        startWatch('RETRY-SIMPLE', {
+          enableHighAccuracy: false,
+          distanceFilter: 0,
+          timeout: 30000,
+          maximumAge: 10000,
+          forceLocationManager: false,
+        });
+      }
+    } else {
+      if (fallbackActive) {
+        Logger.success('LOC', '✅ Watch recovered - deactivating fallback');
+        fallbackActive = false;
+      }
+    }
+  }, 3000); // Check every 3 seconds
+
+  Logger.success('LOC', '✅ Navigation tracking started (watch + smart fallback)');
+}, [updateRouteVisual, clearPassiveWatch, clearNavigationWatch, updateMarkerPosition]);
+  // ═══════════════════════════════════════════════════════════
+  // START NAVIGATION
+  // ═══════════════════════════════════════════════════════════
+  const startNavigation = useCallback(async () => {
+    Logger.nav('🧭 ═══ STARTING NAVIGATION ═══');
+    
+    // Check location first
+    const locationOK = await checkLocationEnabled();
+    if (!locationOK) {
+      Logger.warn('NAV', 'Location not enabled, canceling navigation');
+      return;
+    }
+
+    isNavigatingRef.current = true;
+    followUserRef.current = true;
+    hasActiveRouteRef.current = true;
+    rerouteCountRef.current = 0;
+    isStoppingRef.current = false;
+    isCleaningUpRef.current = false;
+    smoothedHeadingRef.current = 0;
+
+    setIsNavigating(true);
+    setFollowUser(true);
+    setCurrentStepIndex(0);
+
+    Logger.verbose('NAV', '✅ Navigation state set');
+
+    startLocationTracking();
+
+    // Setup initial camera
+    setTimeout(() => {
+      if (cameraRef.current && lastLocationRef.current && isNavigatingRef.current) {
+        Logger.camera(`🧭 Nav camera init: zoom=${NAV_CONFIG.NAVIGATION_ZOOM}, tilt=${NAV_CONFIG.NAVIGATION_TILT}`);
         try {
-          console.log('[ROUTE] Fetching from backend (NO CACHE)...');
-          const routeData = await RoutingService.fetchRoute(
-            data.startLat, 
-            data.startLng, 
-            data.destLat, 
-            data.destLng
-          );
-
-          const responseTime = Date.now() - startTime;
-          console.log(`[ROUTE] Success in ${responseTime}ms`);
-
-          processNavigationSteps(routeData);
-          updateRouteStats();
-
-          const route = routeData.routes[0];
-          webRef.current?.injectJavaScript(`
-            window.handleRouteData({
-              coordinates: ${JSON.stringify(route.geometry.coordinates)}
-            });
-            true;
-          `);
-
-          // Show success message from backend
-          const successMessage = routeData.backendMessage || 'Route fetched successfully';
-          Alert.alert(
-            '✅ Route Success',
-            `${successMessage}\n\n` +
-            `📍 Distance: ${formatDistance(route.distance)}\n` +
-            `⏱️ Duration: ${formatDuration(route.duration)}\n` +
-            `📊 Response Time: ${responseTime}ms\n\n` +
-            `🔥 Fresh from backend (No Cache)`,
-            [{ text: 'OK' }]
-          );
-
-        } catch (error) {
-          console.log('[ROUTE] Error:', error.message);
-          updateRouteStats();
-
-          // Show error message from backend
-          Alert.alert(
-            '❌ Backend Error',
-            `Could not fetch route from backend.\n\n` +
-            `📛 Error: ${error.message}\n\n` +
-            `🔄 Showing straight line as fallback.`,
-            [{ text: 'OK' }]
-          );
-
-          // Fallback: straight line
-          webRef.current?.injectJavaScript(`
-            window.handleRouteData({
-              coordinates: [[${data.startLng}, ${data.startLat}], [${data.destLng}, ${data.destLat}]]
-            });
-            true;
-          `);
-
-          // Create basic route info
-          const distance = calcDistance(data.startLat, data.startLng, data.destLat, data.destLng);
-          setRouteInfo({
-            totalDistance: distance,
-            totalDuration: distance / 13.89, // Assume 50 km/h average
-            stepsCount: 2,
+          cameraRef.current.setCamera({
+            centerCoordinate: [lastLocationRef.current.longitude, lastLocationRef.current.latitude],
+            zoomLevel: NAV_CONFIG.NAVIGATION_ZOOM,
+            pitch: NAV_CONFIG.NAVIGATION_TILT,
+            animationDuration: 800,
           });
-        } finally {
-          setRouteLoading(false);
+        } catch (error) {
+          Logger.error('CAMERA', 'Nav camera init failed', error);
         }
       }
-    } catch (e) {
-      console.log('[MAP] Parse error:', e.message);
-    }
-  }, [processNavigationSteps, updateRouteStats, calcDistance]);
+    }, 300);
+    
+    Logger.success('NAV', '✅ Navigation started successfully');
+  }, [startLocationTracking, checkLocationEnabled]);
 
-  /* ───────── Actions ───────── */
-  const handleOccupy = useCallback(async () => {
-    setGettingLoc(true);
+  // ═══════════════════════════════════════════════════════════
+  // RECENTER
+  // ═══════════════════════════════════════════════════════════
+  const recenterOnUser = useCallback(() => {
+    Logger.camera('🎯 Recentering on user');
+    followUserRef.current = true;
+    setFollowUser(true);
+    lastCameraUpdateRef.current = 0;
+
+    if (lastLocationRef.current && cameraRef.current) {
+      try {
+        const heading = routeLineManager.getNavigationBearing(lastLocationRef.current);
+        smoothedHeadingRef.current = heading;
+        cameraRef.current.setCamera({
+          centerCoordinate: [lastLocationRef.current.longitude, lastLocationRef.current.latitude],
+          zoomLevel: NAV_CONFIG.NAVIGATION_ZOOM,
+          heading,
+          pitch: isNavigatingRef.current ? NAV_CONFIG.NAVIGATION_TILT : 0,
+          animationDuration: 600,
+        });
+        Logger.verbose('CAMERA', '✅ Recentered');
+      } catch (error) {
+        Logger.error('CAMERA', 'Recenter failed', error);
+      }
+    }
+  }, []);
+
+  const toggleVoice = useCallback(() => { 
+    const enabled = VoiceGuidance.toggle();
+    setVoiceEnabled(enabled);
+    Logger.info('VOICE', `Voice ${enabled ? 'enabled' : 'disabled'}`);
+  }, []);
+
+  // ═════════════════════════════════════════════════════════════
+  // LOAD SPOTS
+  // ═════════════════════════════════════════════════════════════
+  const loadSpots = useCallback(async (location, forceRefresh = false) => {
+    Logger.info('SPOTS', `Loading spots... forceRefresh=${forceRefresh}`);
+    setSpotsLoading(true);
     try {
-      const loc = await getLoc();
-      if (!loc) return Alert.alert('Error', 'Could not get location');
+      const saved = await ParkingService.getMySpot();
+      setMySpot(saved);
+      
+      let shouldFetch = forceRefresh;
+      if (!shouldFetch && lastNearbyFetchLocRef.current) {
+        shouldFetch = calcDistance(location.latitude, location.longitude,
+          lastNearbyFetchLocRef.current.latitude, lastNearbyFetchLocRef.current.longitude) > NEARBY_CONFIG.MIN_MOVE_TO_REFRESH;
+      } else {
+        shouldFetch = true;
+      }
 
-      const newSpot = { 
-        id: `my_${Date.now()}`, 
-        latitude: loc.latitude, 
-        longitude: loc.longitude, 
-        isOccupied: true, 
-        isMySpot: true, 
-        deviceName: 'My Car', 
-        userId: 'me', 
-        createdAt: Date.now() 
-      };
-      await saveMySpot(newSpot);
-      setUserLoc(loc);
-      await loadSpots(loc);
-
-      webRef.current?.injectJavaScript(`
-        window.setUserLocation(${loc.latitude}, ${loc.longitude}, true); 
-        window.setMySpot(${loc.latitude}, ${loc.longitude}); 
-        true;
-      `);
-      Alert.alert('✅ Done', 'Parking spot occupied!');
-    } finally {
-      setGettingLoc(false);
-    }
-  }, [getLoc, loadSpots, saveMySpot]);
-
-  const handleVacate = useCallback(async () => {
-    if (!mySpot) return Alert.alert('No Spot', 'Nothing to vacate');
-    Alert.alert('Vacate?', 'Mark your spot as available?', [
-      { text: 'Cancel', style: 'cancel' },
-      { 
-        text: 'Vacate', 
-        style: 'destructive', 
-        onPress: async () => {
-          await saveMySpot({ ...mySpot, isOccupied: false });
-          await loadSpots(userLoc);
-          Alert.alert('✅ Done', 'Spot vacated!');
+      let nearbySpots = [];
+      if (shouldFetch) {
+        try {
+          nearbySpots = await ParkingService.fetchNearbySpots(location.latitude, location.longitude, NEARBY_CONFIG.RADIUS);
+          lastNearbyFetchLocRef.current = {...location};
+          Logger.success('SPOTS', `Fetched ${nearbySpots.length} nearby spots`);
+        } catch (error) { 
+          Logger.error('SPOTS', 'Fetch failed', error); 
         }
-      },
+      } else {
+        nearbySpots = allSpots.filter(s => !s.isMySpot);
+      }
+
+      let combined = [...nearbySpots];
+      if (saved && saved.isOccupied) {
+        combined = combined.filter(s => calcDistance(s.latitude, s.longitude, saved.latitude, saved.longitude) > 5);
+        combined.push({...saved, isMySpot: true});
+      }
+      combined = combined.map(s => ({
+        ...s, 
+        distance: calcDistance(location.latitude, location.longitude, s.latitude, s.longitude)
+      }));
+      combined.sort((a, b) => a.distance - b.distance);
+      setAllSpots(combined);
+      Logger.info('SPOTS', `📊 ${combined.length} spots loaded (${combined.filter(s => !s.isOccupied).length} available)`);
+    } catch (error) { 
+      Logger.error('SPOTS', 'loadSpots error', error); 
+    }
+    finally { setSpotsLoading(false); }
+  }, [allSpots]);
+
+  const refreshNearbySpots = useCallback(async () => {
+    Logger.info('SPOTS', '🔄 Refreshing nearby spots...');
+    await loadSpots(lastLocationRef.current || userLoc, true);
+  }, [loadSpots, userLoc]);
+
+  // ═════════════════════════════════════════════════════════════
+  // INIT
+  // ═════════════════════════════════════════════════════════════
+  useEffect(() => {
+    Logger.info('INIT', `🚀 ═══ ParkingMapScreen v${APP_CONFIG.VERSION} STARTING ═══`);
+    isMountedRef.current = true;
+
+    (async () => {
+      try {
+        await VoiceGuidance.init();
+        const loc = await getLoc();
+        if (!isMountedRef.current) return;
+        
+        setUserLoc(loc);
+        lastLocationRef.current = loc;
+        updateMarkerPosition(loc.latitude, loc.longitude, true);
+        await loadSpots(loc, true);
+        setLoading(false);
+        doStartPassiveTracking();
+
+        setTimeout(() => {
+          if (cameraRef.current && isMountedRef.current) {
+            Logger.camera(`🏁 Initial camera: ${loc.latitude.toFixed(6)}, ${loc.longitude.toFixed(6)} zoom=15`);
+            try {
+              cameraRef.current.setCamera({
+                centerCoordinate: [loc.longitude, loc.latitude],
+                zoomLevel: 15,
+                animationDuration: 1000,
+              });
+            } catch (e) {
+              Logger.error('CAMERA', 'Initial camera failed', e);
+            }
+          }
+        }, 500);
+        
+        Logger.success('INIT', '✅ Initialization complete');
+      } catch (error) {
+        Logger.error('INIT', '❌ Initialization failed', error);
+        setLoading(false);
+      }
+    })();
+
+    // Auto refresh nearby spots
+    nearbyRefreshTimerRef.current = setInterval(() => {
+      if (!isNavigatingRef.current && lastLocationRef.current && isMountedRef.current) {
+        loadSpots(lastLocationRef.current, true);
+      }
+    }, NEARBY_CONFIG.AUTO_REFRESH_INTERVAL);
+
+    // App state listener
+    const sub = AppState.addEventListener('change', next => {
+      Logger.info('APP', `📱 App state: ${appStateRef.current} → ${next}`);
+      if (appStateRef.current.match(/inactive|background/) && next === 'active') {
+        Logger.info('APP', '📱 App foregrounded - resuming...');
+        if (isNavigatingRef.current && !isStoppingRef.current) {
+          startLocationTracking();
+        } else if (!isNavigatingRef.current) {
+          doStartPassiveTracking();
+        }
+        if (lastLocationRef.current) {
+          loadSpots(lastLocationRef.current, true);
+        }
+      }
+      appStateRef.current = next;
+    });
+
+    return () => {
+      Logger.info('CLEANUP', '🧹 ═══ COMPONENT UNMOUNTING ═══');
+      isMountedRef.current = false;
+      RouteCache.clear();
+      isNavigatingRef.current = false;
+      hasActiveRouteRef.current = false;
+      clearNavigationWatch(); 
+      clearPassiveWatch();
+      if (navIntervalRef.current) {
+        clearInterval(navIntervalRef.current);
+        navIntervalRef.current = null;
+      }
+      if (nearbyRefreshTimerRef.current) {
+        clearInterval(nearbyRefreshTimerRef.current);
+      }
+      try { VoiceGuidance.stop(); } catch (_) {}
+      try { routeLineManager.clear(); } catch (_) {}
+      try { stepTracker.reset(); } catch (_) {}
+      try { locationProcessor.reset(); } catch (_) {}
+      sub.remove();
+      Logger.success('CLEANUP', '✅ Unmount cleanup complete');
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ═════════════════════════════════════════════════════════════
+  // FETCH AND SHOW ROUTE
+  // ═════════════════════════════════════════════════════════════
+  const fetchAndShowRoute = useCallback(async (destLat, destLng, startNav = false) => {
+    const currentLoc = lastLocationRef.current || userLoc;
+    Logger.nav(`📍 ═══ FETCHING ROUTE ═══`);
+    Logger.nav(`📍 From: ${currentLoc.latitude.toFixed(6)}, ${currentLoc.longitude.toFixed(6)}`);
+    Logger.nav(`📍 To: ${destLat.toFixed(6)}, ${destLng.toFixed(6)}`);
+    Logger.nav(`📍 Start nav: ${startNav}`);
+    
+    setRouteLoading(true);
+    
+    try {
+      const distance = calcDistance(currentLoc.latitude, currentLoc.longitude, destLat, destLng);
+      Logger.info('ROUTE', `Direct distance: ${distance.toFixed(0)}m`);
+      
+      if (distance < 20) {
+        setRouteLoading(false);
+        Alert.alert('📍 Too Close', `Only ${distance.toFixed(0)}m away.`, [
+          {text: 'OK'},
+          { text: 'Walk There', onPress: () => {
+            const straightLine = [[currentLoc.longitude, currentLoc.latitude], [destLng, destLat]];
+            const dest = {latitude: destLat, longitude: destLng};
+            routeLineManager.setFullRoute(straightLine, dest);
+            hasActiveRouteRef.current = true;
+            totalDistanceRef.current = distance;
+            totalDurationRef.current = distance / 1.4;
+            routeCoordinatesRef.current = straightLine;
+            setRouteCoordinates(straightLine); 
+            setDestination(dest);
+            setRemainingDistance(distance); 
+            setRemainingDuration(distance / 1.4);
+            setRouteInfo({ totalDistance: distance, totalDuration: distance / 1.4, stepsCount: 0 });
+            fitBounds(straightLine);
+            Logger.success('ROUTE', 'Straight line route set');
+          }},
+        ]);
+        return;
+      }
+
+      const routeData = await RoutingService.fetchRoute(currentLoc.latitude, currentLoc.longitude, destLat, destLng);
+      const route = routeData.routes[0];
+      const coords = route.geometry.coordinates;
+      const steps = route.steps || [];
+      const dest = {latitude: destLat, longitude: destLng};
+
+      routeLineManager.setFullRoute(coords, dest);
+      stepTracker.setSteps(steps);
+      hasActiveRouteRef.current = true;
+      totalDistanceRef.current = route.distance;
+      totalDurationRef.current = route.duration;
+      routeCoordinatesRef.current = coords;
+
+      setRouteCoordinates(coords); 
+      setDestination(dest);
+      setNavigationSteps(steps);
+      setRouteInfo({ totalDistance: route.distance, totalDuration: route.duration, stepsCount: steps.length });
+      setRemainingDistance(route.distance); 
+      setRemainingDuration(route.duration);
+      setCurrentStepIndex(0); 
+      setNavigationProgress(0);
+      fitBounds(coords);
+
+      Logger.success('NAV', `✅ Route ready: ${coords.length} pts, ${steps.length} steps, ${formatDistance(route.distance)}`);
+
+      if (startNav) {
+        setTimeout(() => startNavigation(), 500);
+      } else {
+        Alert.alert('✅ Route Ready',
+          `📏 ${formatDistance(route.distance)}\n⏱️ ${formatDuration(route.duration)}\n📝 ${steps.length} steps`,
+          [
+            {text: 'View Steps', onPress: () => setShowNavigation(true)},
+            {text: 'Start Nav', onPress: () => startNavigation()},
+            {text: 'OK'},
+          ]);
+      }
+    } catch (error) {
+      Logger.error('NAV', 'Route failed', error);
+      
+      // Fallback straight line
+      const fb = [[currentLoc.longitude, currentLoc.latitude], [destLng, destLat]];
+      const dist = calcDistance(currentLoc.latitude, currentLoc.longitude, destLat, destLng);
+      const dest = {latitude: destLat, longitude: destLng};
+      routeLineManager.setFullRoute(fb, dest);
+      hasActiveRouteRef.current = true;
+      totalDistanceRef.current = dist; 
+      totalDurationRef.current = dist / 11.11;
+      routeCoordinatesRef.current = fb;
+      setRouteCoordinates(fb); 
+      setDestination(dest); 
+      fitBounds(fb);
+      setRouteInfo({ totalDistance: dist, totalDuration: dist / 11.11, stepsCount: 2 });
+      setRemainingDistance(dist); 
+      setRemainingDuration(dist / 11.11);
+      
+      const fallbackSteps = [
+        { id: '1', stepNumber: 1, icon: '🚀', instruction: 'Head towards destination', distance: dist, duration: dist / 11.11, maneuverType: 'depart', location: [currentLoc.longitude, currentLoc.latitude], name: '', modifier: '', coordinates: [] },
+        { id: '2', stepNumber: 2, icon: '🎯', instruction: 'Arrive at destination', distance: 0, duration: 0, maneuverType: 'arrive', location: [destLng, destLat], name: '', modifier: '', coordinates: [] },
+      ];
+      stepTracker.setSteps(fallbackSteps); 
+      setNavigationSteps(fallbackSteps);
+      Alert.alert('⚠️ Route Error', `${error.message}\n\nShowing straight line.`);
+    } finally { 
+      setRouteLoading(false); 
+    }
+  }, [userLoc, fitBounds, startNavigation]);
+
+  const clearRoute = useCallback(async () => {
+    Logger.info('ROUTE', '🧹 ═══ CLEARING ROUTE ═══');
+    await doFullCleanup();
+    setTimeout(() => { 
+      if (isMountedRef.current && !isNavigatingRef.current) {
+        doStartPassiveTracking(); 
+      }
+    }, 300);
+  }, [doFullCleanup, doStartPassiveTracking]);
+
+  // ═════════════════════════════════════════════════════════════
+  // OCCUPY / VACATE
+  // ═════════════════════════════════════════════════════════════
+  const handleOccupy = useCallback(async () => {
+    Logger.info('PARKING', '🅿️ Occupy spot requested');
+    const loc = await getLoc();
+    if (!loc?.latitude) return Alert.alert('❌', 'Location not found');
+    Alert.alert('🅿️ Occupy Spot', `Park at:\n📍 ${loc.latitude.toFixed(6)}, ${loc.longitude.toFixed(6)}`, [
+      {text: 'Cancel', style: 'cancel'},
+      { text: 'Occupy', onPress: async () => {
+        setGettingLoc(true);
+        try {
+          const spotData = await ParkingService.occupySpot(loc.latitude, loc.longitude);
+          setMySpot(spotData); 
+          setUserLoc(loc);
+          lastLocationRef.current = loc;
+          updateMarkerPosition(loc.latitude, loc.longitude, true);
+          await loadSpots(loc, true);
+          flyTo(loc.latitude, loc.longitude, 17, true);
+          Alert.alert('✅ Spot Occupied!', 'Your parking spot has been saved.');
+          Logger.success('PARKING', '✅ Spot occupied');
+        } catch (error) { 
+          Logger.error('PARKING', 'Occupy failed', error);
+          Alert.alert('❌ Failed', error.message); 
+        }
+        finally { setGettingLoc(false); }
+      }},
     ]);
-  }, [loadSpots, mySpot, saveMySpot, userLoc]);
+  }, [getLoc, loadSpots, flyTo, updateMarkerPosition]);
+
+  const handleVacate = useCallback(() => {
+    Logger.info('PARKING', '🚗 Vacate spot requested');
+    if (!mySpot?.isOccupied) return Alert.alert('ℹ️', 'No spot to vacate');
+    Alert.alert('🚗 Vacate Spot', `📍 ${mySpot.latitude.toFixed(6)}, ${mySpot.longitude.toFixed(6)}`, [
+      {text: 'Cancel', style: 'cancel'},
+      { text: 'Vacate', style: 'destructive', onPress: async () => {
+        setGettingLoc(true);
+        try {
+          const vacated = await ParkingService.vacateSpot(mySpot.latitude, mySpot.longitude);
+          setMySpot(vacated);
+          await loadSpots(userLoc, true);
+          Alert.alert('✅ Spot Vacated!', 'Your parking spot is now available.');
+          Logger.success('PARKING', '✅ Spot vacated');
+        } catch (error) { 
+          Logger.error('PARKING', 'Vacate failed', error);
+          Alert.alert('❌ Failed', error.message); 
+        }
+        finally { setGettingLoc(false); }
+      }},
+    ]);
+  }, [mySpot, loadSpots, userLoc]);
+
+  // ═════════════════════════════════════════════════════════════
+  // ACTIONS
+  // ═════════════════════════════════════════════════════════════
+  const handleSpotPress = useCallback(spot => { 
+    Logger.info('SPOT', `Spot pressed: ${spot.id}`);
+    setSelectedSpot(spot); 
+    setShowModal(true); 
+  }, []);
 
   const onLocate = useCallback(async () => {
+    Logger.loc('🎯 Locating user...');
     const loc = await getLoc();
     if (!loc) return;
-    setUserLoc(loc);
-    await loadSpots(loc);
-    webRef.current?.injectJavaScript(`
-      window.setUserLocation(${loc.latitude}, ${loc.longitude}, true); 
-      true;
-    `);
-  }, [getLoc, loadSpots]);
+    setUserLoc(loc); 
+    lastLocationRef.current = loc;
+    updateMarkerPosition(loc.latitude, loc.longitude, true);
+    await loadSpots(loc, true);
+    flyTo(loc.latitude, loc.longitude, 16, true);
+  }, [getLoc, loadSpots, flyTo, updateMarkerPosition]);
 
-  const onShowRoute = useCallback((spot) => {
-    setShowModal(false);
-    webRef.current?.injectJavaScript(`
-      window.showRoute(${spot.latitude}, ${spot.longitude}); 
-      true;
-    `);
-  }, []);
+  const onShowRoute = useCallback(spot => {
+    setShowModal(false); 
+    fetchAndShowRoute(spot.latitude, spot.longitude, false);
+  }, [fetchAndShowRoute]);
 
-  const onShowNavigation = useCallback((spot) => {
-    setShowModal(false);
+  const onStartNavigation = useCallback(spot => {
+    setShowModal(false); 
+    setShowNavigation(false);
+    fetchAndShowRoute(spot.latitude, spot.longitude, true);
+  }, [fetchAndShowRoute]);
+
+  const onShowSteps = useCallback(spot => {
+    setShowModal(false); 
     setShowNavigation(true);
-    webRef.current?.injectJavaScript(`
-      window.showRoute(${spot.latitude}, ${spot.longitude}); 
-      true;
-    `);
-  }, []);
+    if (!routeCoordinates) fetchAndShowRoute(spot.latitude, spot.longitude, false);
+  }, [fetchAndShowRoute, routeCoordinates]);
 
-  const onNavigate = useCallback((spot) => {
-    Linking.openURL(
-      `https://www.google.com/maps/dir/?api=1&origin=${userLoc.latitude},${userLoc.longitude}&destination=${spot.latitude},${spot.longitude}&travelmode=driving`
-    );
+  const onNavigateExternal = useCallback(spot => {
+    const loc = lastLocationRef.current || userLoc;
+    Linking.openURL(`https://www.google.com/maps/dir/?api=1&origin=${loc.latitude},${loc.longitude}&destination=${spot.latitude},${spot.longitude}&travelmode=driving`);
   }, [userLoc]);
 
   const onFindParking = useCallback(() => {
-    const nearest = allSpots.find((s) => !s.isOccupied && !s.isMySpot);
-    if (!nearest) return Alert.alert('😕 No Parking', 'No available spots nearby');
-    webRef.current?.injectJavaScript(`
-      window.panTo(${nearest.latitude}, ${nearest.longitude}, 17); 
-      true;
-    `);
-    setSelectedSpot(nearest);
+    Logger.info('PARKING', '🔍 Finding nearest parking...');
+    const nearest = allSpots.find(s => !s.isOccupied && !s.isMySpot);
+    if (!nearest) return Alert.alert('😕', 'No available spots within 500m');
+    flyTo(nearest.latitude, nearest.longitude, 17, true);
+    setSelectedSpot(nearest); 
     setShowModal(true);
-  }, [allSpots]);
+    Logger.success('PARKING', `Found: ${nearest.id}`);
+  }, [allSpots, flyTo]);
 
-  const zoomIn = useCallback(() => { 
-    webRef.current?.injectJavaScript(`window.zoomIn(); true;`); 
-  }, []);
+  const showRouteStats = useCallback(() => {
+    const stats = NavigationDebug.getFullStatus();
+    const loc = lastLocationRef.current || userLoc;
+    Alert.alert('📊 Debug v5.4',
+      `📡 Routing: ${stats.routing.total} total | ✅ ${stats.routing.success} | ❌ ${stats.routing.fail} | 🚀 ${stats.routing.cache} cached\n\n` +
+      `🅿️ Spots: ${allSpots.length} (${allSpots.filter(s => !s.isOccupied).length} available)\n\n` +
+      `📍 Location: ${locationSource}\n📌 ${loc.latitude.toFixed(6)}, ${loc.longitude.toFixed(6)}\n🎯 Accuracy: ±${locationAccuracy.toFixed(0)}m\n\n` +
+      `🗺️ Route: ${hasActiveRouteRef.current ? 'ACTIVE' : 'NONE'}\n📏 Remaining: ${formatDistance(remainingDistance)}\n📈 Progress: ${(navigationProgress * 100).toFixed(0)}%\n\n` +
+      `🎯 Snapped: ${snappedUserCoord ? 'YES' : 'NO'}\n\n` +
+      `🔄 Renders: ${renderCountRef.current}\n📦 Cache: ${stats.cache} routes`
+    );
+  }, [allSpots.length, locationSource, userLoc, locationAccuracy, remainingDistance, navigationProgress, snappedUserCoord]);
 
-  const zoomOut = useCallback(() => { 
-    webRef.current?.injectJavaScript(`window.zoomOut(); true;`); 
-  }, []);
+  const zoomIn = useCallback(() => {
+    const z = Math.min(zoomLevel + 1, 18);
+    setZoomLevel(z);
+    cameraRef.current?.setCamera({zoomLevel: z, animationDuration: 300});
+  }, [zoomLevel]);
 
-  const clearRoute = useCallback(() => { 
-    setRouteInfo(null); 
-    setNavigationSteps([]); 
-    webRef.current?.injectJavaScript(`window.clearRoute(); true;`); 
-  }, []);
+  const zoomOut = useCallback(() => {
+    const z = Math.max(zoomLevel - 1, 5);
+    setZoomLevel(z);
+    cameraRef.current?.setCamera({zoomLevel: z, animationDuration: 300});
+  }, [zoomLevel]);
 
   const runSearch = useCallback(async () => {
     const q = searchQuery.trim();
     if (!q) return;
-    Keyboard.dismiss();
+    Logger.info('SEARCH', `Searching: ${q}`);
+    Keyboard.dismiss(); 
     setSearching(true);
     try {
-      const res = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`
-      );
+      const res = await fetchWithTimeout(
+        `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`,
+        { headers: { 'User-Agent': `${APP_CONFIG.APP_NAME}/${APP_CONFIG.VERSION}` } }, 8000);
       const results = await res.json();
-      if (!results?.length) return Alert.alert('Not found', 'No results for your search');
-      webRef.current?.injectJavaScript(`
-        window.panTo(${results[0].lat}, ${results[0].lon}, 16); 
-        true;
-      `);
-    } catch { 
+      if (!results?.length) return Alert.alert('Not Found', 'Location not found');
+      const lat = parseFloat(results[0].lat), lng = parseFloat(results[0].lon);
+      setSearchMarker({latitude: lat, longitude: lng});
+      flyTo(lat, lng, 16, true);
+      Logger.success('SEARCH', `Found: ${results[0].display_name}`);
+    } catch (e) { 
       Alert.alert('Error', 'Search failed'); 
-    } finally { 
-      setSearching(false); 
+      Logger.error('SEARCH', 'Failed', e);
     }
-  }, [searchQuery]);
+    finally { setSearching(false); }
+  }, [searchQuery, flyTo]);
 
-  const renderStep = ({ item, index }) => (
-    <View style={S.navStep}>
-      <View style={S.navStepLeft}>
-        <View style={[
-          S.navIconContainer, 
-          item.maneuverType === 'arrive' && { backgroundColor: '#4CAF50' }
-        ]}>
-          <Text style={S.navIcon}>{item.icon}</Text>
-        </View>
-        {index < navigationSteps.length - 1 && <View style={S.navConnector} />}
-      </View>
-      <View style={S.navStepRight}>
-        <View style={S.navStepHeader}>
-          <Text style={S.navStepNumber}>Step {item.stepNumber}</Text>
-          <Text style={S.navStepDistance}>{formatDistance(item.distance)}</Text>
-        </View>
-        <Text style={S.navStepInstruction}>{item.instruction}</Text>
-        <Text style={S.navStepDuration}>⏱️ ~{formatDuration(item.duration)}</Text>
-      </View>
-    </View>
-  );
+  // ═════════════════════════════════════════════════════════════
+  // MEMOIZED
+  // ═════════════════════════════════════════════════════════════
+  const renderStep = useCallback(({item, index}) => (
+    <NavigationStepItem step={item} index={index} currentStepIndex={currentStepIndex}
+      distanceToNextStep={distanceToNextStep} totalSteps={navigationSteps.length} />
+  ), [currentStepIndex, distanceToNextStep, navigationSteps.length]);
+
+  const stepKeyExtractor = useCallback(item => item.id, []);
+
+  const availableCount = useMemo(() => allSpots.filter(s => !s.isOccupied && !s.isMySpot).length, [allSpots]);
+  const occupiedCount = useMemo(() => allSpots.filter(s => s.isOccupied).length, [allSpots]);
+
+  // ═════════════════════════════════════════════════════════════
+  // ✅ SAFE ROUTE VISUALIZATION HELPER
+  // ═════════════════════════════════════════════════════════════
+  const renderRoute = useMemo(() => {
+    // Safety checks
+    if (!routeCoordinates || routeCoordinates.length < 2) {
+      return null;
+    }
+    if (isStoppingRef.current || isCleaningUpRef.current) {
+      return null;
+    }
+
+    try {
+      const currentLoc = lastLocationRef.current;
+      let traveledCoords = [];
+      let remainingCoords = routeCoordinates;
+
+      if (currentLoc && isNavigating && routeCoordinates.length > 2) {
+        let minDist = Infinity;
+        let splitIndex = 0;
+
+        for (let i = 0; i < routeCoordinates.length - 1; i++) {
+          const segStart = routeCoordinates[i];
+          if (!segStart || segStart.length !== 2) continue;
+          
+          const dist = calcDistance(
+            currentLoc.latitude, 
+            currentLoc.longitude,
+            segStart[1], 
+            segStart[0]
+          );
+          
+          if (dist < minDist) {
+            minDist = dist;
+            splitIndex = i;
+          }
+        }
+
+        if (splitIndex > 0 && minDist < 50) {
+          traveledCoords = routeCoordinates.slice(0, splitIndex + 1);
+          remainingCoords = routeCoordinates.slice(splitIndex);
+        }
+      }
+
+      return { traveledCoords, remainingCoords };
+    } catch (error) {
+      Logger.error('RENDER', 'Route visualization error', error);
+      return null;
+    }
+  }, [routeCoordinates, isNavigating]);
 
   if (loading) {
     return (
       <SafeAreaView style={S.loading}>
         <ActivityIndicator size="large" color="#E53935" />
-        <Text style={S.loadingTitle}>Loading Map...</Text>
-        <Text style={S.loadingSubtitle}>Connecting to backend (No Cache)...</Text>
+        <Text style={{marginTop: 16, fontSize: 16, fontWeight: '700', color: '#111'}}>Loading Map...</Text>
       </SafeAreaView>
     );
   }
 
+  // ═════════════════════════════════════════════════════════════
+  // RENDER
+  // ═════════════════════════════════════════════════════════════
   return (
     <SafeAreaView style={S.safe} edges={['top', 'bottom']}>
-      <View style={S.container}>
-        <WebView 
-          ref={webRef} 
-          source={{ html: mapHtml }} 
-          style={StyleSheet.absoluteFill} 
-          javaScriptEnabled 
-          domStorageEnabled 
-          originWhitelist={['*']} 
-          onMessage={onWebMessage} 
-          scrollEnabled={false} 
-        />
+      <View style={{flex: 1}}>
+        <MapLibreGL.MapView
+          ref={mapRef} style={StyleSheet.absoluteFill} styleJSON={EMPTY_STYLE}
+          logoEnabled={false} attributionEnabled={false} compassEnabled={true} compassViewPosition={3}
+          rotateEnabled={!isNavigating} pitchEnabled={true}
+          scrollEnabled={!isNavigating || !followUser} zoomEnabled={true}
+          onDidFinishLoadingMap={() => Logger.success('MAP', '🗺️ Map loaded')}
+          onDidFinishRenderingMapFully={() => setTilesLoaded(true)}
+          onTouchStart={() => {
+            if (isNavigating && followUser) {
+              Logger.camera('👆 Touch — disabling follow mode');
+              followUserRef.current = false;
+              setFollowUser(false);
+            }
+          }}>
 
+          <MapLibreGL.Camera
+            ref={cameraRef}
+            maxZoomLevel={18} 
+            minZoomLevel={5}
+            followUserLocation={isNavigating && followUser}
+            followUserMode={isNavigating && followUser ? 'course' : 'normal'}
+            followZoomLevel={isNavigating ? NAV_CONFIG.NAVIGATION_ZOOM : 15}
+            followPitch={isNavigating ? NAV_CONFIG.NAVIGATION_TILT : 0}
+            animationMode="easeTo"
+            animationDuration={600}
+          />
+
+          <MapLibreGL.RasterSource id="osm"
+            tileUrlTemplates={['https://tile.openstreetmap.org/{z}/{x}/{y}.png']}
+            tileSize={256} maxZoomLevel={18} minZoomLevel={3}>
+            <MapLibreGL.RasterLayer id="osmLayer" sourceID="osm" style={{rasterOpacity: 1}} maxZoomLevel={18} />
+          </MapLibreGL.RasterSource>
+
+          {!isNavigating && allSpots.map(spot => (
+            <ParkingMarker key={spot.id} spot={spot} onPress={handleSpotPress} />
+          ))}
+          {searchMarker && !isNavigating && <SearchMarker coordinate={searchMarker} />}
+          {destination && <DestinationMarker coordinate={destination} />}
+
+          {/* ✅ SAFE ROUTE VISUALIZATION */}
+          {renderRoute && (
+            <>
+              {/* TRAVELED ROUTE (GRAY) */}
+              {renderRoute.traveledCoords && renderRoute.traveledCoords.length > 1 && (
+                <MapLibreGL.ShapeSource 
+                  id="traveledRouteSource" 
+                  shape={{
+                    type: 'Feature',
+                    geometry: {
+                      type: 'LineString',
+                      coordinates: renderRoute.traveledCoords
+                    }
+                  }}
+                >
+                  <MapLibreGL.LineLayer 
+                    id="traveledRouteLine" 
+                    style={{
+                      lineColor: '#9E9E9E',
+                      lineWidth: 8,
+                      lineOpacity: 0.6,
+                      lineCap: 'round',
+                      lineJoin: 'round'
+                    }} 
+                  />
+                </MapLibreGL.ShapeSource>
+              )}
+
+              {/* REMAINING ROUTE (BLUE/RED) */}
+              {renderRoute.remainingCoords && renderRoute.remainingCoords.length > 1 && (
+                <MapLibreGL.ShapeSource 
+                  id="remainingRouteSource" 
+                  shape={{
+                    type: 'Feature',
+                    geometry: {
+                      type: 'LineString',
+                      coordinates: renderRoute.remainingCoords
+                    }
+                  }}
+                >
+                  <MapLibreGL.LineLayer 
+                    id="remainingRouteBorder" 
+                    style={{
+                      lineColor: '#FFFFFF',
+                      lineWidth: 12,
+                      lineOpacity: 0.9,
+                      lineCap: 'round',
+                      lineJoin: 'round'
+                    }} 
+                  />
+                  <MapLibreGL.LineLayer 
+                    id="remainingRouteLine" 
+                    style={{
+                      lineColor: isNavigating ? '#4285F4' : '#E53935',
+                      lineWidth: 7,
+                      lineOpacity: 1,
+                      lineCap: 'round',
+                      lineJoin: 'round'
+                    }} 
+                  />
+                </MapLibreGL.ShapeSource>
+              )}
+            </>
+          )}
+
+          {/* ✅ FIXED: User marker with snapped coordinate */}
+          <UserLocationMarker
+            coordinate={userMarkerCoord}
+            heading={userHeading}
+            isNavigating={isNavigating}
+            accuracy={locationAccuracy}
+            snappedCoordinate={snappedUserCoord}
+          />
+        </MapLibreGL.MapView>
+
+        {/* NAVIGATION PANEL */}
+        {isNavigating && navigationSteps.length > 0 && (
+          <NavigationPanel
+            currentStep={navigationSteps[currentStepIndex]}
+            nextStep={navigationSteps[currentStepIndex + 1]}
+            distanceToNextStep={distanceToNextStep}
+            totalRemainingDistance={remainingDistance}
+            totalRemainingTime={remainingDuration}
+            progress={navigationProgress}
+            onClose={stopNavigation} 
+            onRecenter={recenterOnUser}
+            isRecentering={followUser} 
+            voiceEnabled={voiceEnabled}
+            onToggleVoice={toggleVoice} 
+          />
+        )}
+
+        {/* TILES LOADING */}
+        {!tilesLoaded && (
+          <View style={S.tilesLoading}>
+            <ActivityIndicator size="small" color="#E53935" />
+            <Text style={{fontSize: 14, color: '#333', fontWeight: '600'}}>Loading tiles...</Text>
+          </View>
+        )}
+
+        {/* ROUTE LOADING */}
         {routeLoading && (
           <View style={S.routeLoadingOverlay}>
             <View style={S.routeLoadingCard}>
               <ActivityIndicator size="large" color="#E53935" />
-              <Text style={S.routeLoadingText}>Fetching route...</Text>
-              <Text style={S.routeLoadingSubtext}>🔥 Fresh from backend (No Cache)</Text>
+              <Text style={{marginTop: 16, fontSize: 16, fontWeight: '700', color: '#111'}}>Fetching route...</Text>
             </View>
           </View>
         )}
 
-        <View style={[S.searchBarWrap, { top: insets.top + 12 }]}>
-          <View style={S.searchBar}>
-            <Text style={S.searchIcon}>🔍</Text>
-            <TextInput 
-              value={searchQuery} 
-              onChangeText={setSearchQuery} 
-              placeholder="Search location..." 
-              placeholderTextColor="#999" 
-              style={S.searchInput} 
-              returnKeyType="search" 
-              onSubmitEditing={runSearch} 
-            />
-            {searchQuery.length > 0 && (
-              <TouchableOpacity onPress={() => setSearchQuery('')}>
-                <Text style={S.searchClear}>✕</Text>
-              </TouchableOpacity>
-            )}
-            <TouchableOpacity onPress={runSearch} style={S.searchActionBtn}>
-              {searching ? (
-                <ActivityIndicator size="small" color="#E53935" />
-              ) : (
-                <Text style={S.searchAction}>→</Text>
+        {/* SEARCH BAR */}
+        {!isNavigating && (
+          <View style={[S.searchWrap, {top: insets.top + 12}]}>
+            <View style={S.searchBar}>
+              <Text style={{fontSize: 18, marginRight: 10}}>🔍</Text>
+              <TextInput 
+                value={searchQuery} 
+                onChangeText={setSearchQuery} 
+                placeholder="Search location..."
+                placeholderTextColor="#999" 
+                style={{flex: 1, fontSize: 15, color: '#111', fontWeight: '500'}}
+                returnKeyType="search" 
+                onSubmitEditing={runSearch} 
+              />
+              {searchQuery.length > 0 && (
+                <TouchableOpacity onPress={() => { setSearchQuery(''); setSearchMarker(null); }}>
+                  <Text style={{fontSize: 18, color: '#999', marginRight: 10, padding: 4}}>✕</Text>
+                </TouchableOpacity>
               )}
+              <TouchableOpacity onPress={runSearch} style={S.searchBtn}>
+                {searching ? <ActivityIndicator size="small" color="#E53935" /> :
+                  <Text style={{fontSize: 20, color: '#E53935', fontWeight: '700'}}>→</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
+        {/* PILLS ROW */}
+        {!isNavigating && (
+          <View style={[S.pillsRow, {top: insets.top + 68}]}>
+            <TouchableOpacity style={[S.pill, mySpot?.isOccupied && S.pillOff]} onPress={handleOccupy} disabled={mySpot?.isOccupied || gettingLoc}>
+              {gettingLoc ? <ActivityIndicator size="small" color="#E53935" /> :
+                <><Text style={{fontSize: 14, marginRight: 5}}>📍</Text><Text style={S.pillTxt}>Occupy</Text></>}
+            </TouchableOpacity>
+            <TouchableOpacity style={[S.pill, !mySpot?.isOccupied && S.pillOff]} onPress={handleVacate} disabled={!mySpot?.isOccupied || gettingLoc}>
+              {gettingLoc ? <ActivityIndicator size="small" color="#E53935" /> :
+                <><Text style={{fontSize: 14, marginRight: 5}}>🚗</Text><Text style={S.pillTxt}>Vacate</Text></>}
+            </TouchableOpacity>
+            <TouchableOpacity style={S.pill} onPress={refreshNearbySpots} disabled={spotsLoading}>
+              {spotsLoading ? <ActivityIndicator size="small" color="#E53935" /> :
+                <><Text style={{fontSize: 14, marginRight: 5}}>🔄</Text><Text style={S.pillTxt}>Refresh</Text></>}
             </TouchableOpacity>
           </View>
-        </View>
+        )}
 
-        <View style={[S.topPillsRow, { top: insets.top + 68 }]}>
-          <TouchableOpacity 
-            style={[S.pillBtn, mySpot?.isOccupied && S.pillDisabled]} 
-            onPress={handleOccupy} 
-            disabled={mySpot?.isOccupied || gettingLoc}
-          >
-            {gettingLoc ? (
-              <ActivityIndicator size="small" color="#E53935" />
-            ) : (
-              <>
-                <Text style={S.pillIcon}>📍</Text>
-                <Text style={S.pillText}>Occupy</Text>
-              </>
-            )}
-          </TouchableOpacity>
-          <TouchableOpacity 
-            style={[S.pillBtn, !mySpot?.isOccupied && S.pillDisabled]} 
-            onPress={handleVacate} 
-            disabled={!mySpot?.isOccupied}
-          >
-            <Text style={S.pillIcon}>🚗</Text>
-            <Text style={S.pillText}>Vacate</Text>
-          </TouchableOpacity>
-        </View>
+        {/* SPOTS BADGE */}
+        {!isNavigating && (
+          <View style={[S.spotsBadge, {top: insets.top + 118}]}>
+            <Text style={{fontSize: 12, fontWeight: '600', color: '#555', textAlign: 'center'}}>
+              🅿️ {allSpots.length} spots • 🟢 {availableCount} free • 🔴 {occupiedCount} taken</Text>
+            <Text style={{fontSize: 10, fontWeight: '500', color: '#999', textAlign: 'center', marginTop: 2}}>
+              📍 {locationSource} {hasActiveRouteRef.current ? '• 🗺️ Route active' : ''}</Text>
+          </View>
+        )}
 
-        {routeInfo && (
-          <View style={[S.routeInfoCard, { top: insets.top + 120 }]}>
-            <View style={S.routeInfoContent}>
-              <View style={S.routeInfoItem}>
-                <Text style={S.routeInfoValue}>{formatDistance(routeInfo.totalDistance)}</Text>
-                <Text style={S.routeInfoLabel}>Distance</Text>
-              </View>
-              <View style={S.routeInfoDivider} />
-              <View style={S.routeInfoItem}>
-                <Text style={S.routeInfoValue}>{formatDuration(routeInfo.totalDuration)}</Text>
-                <Text style={S.routeInfoLabel}>Duration</Text>
-              </View>
-              <View style={S.routeInfoDivider} />
-              <View style={S.routeInfoItem}>
-                <Text style={S.routeInfoValue}>🔥</Text>
-                <Text style={S.routeInfoLabel}>Fresh</Text>
+        {/* ROUTE INFO CARD */}
+        {routeInfo && !isNavigating && (
+          <View style={[S.routeInfoCard, {top: insets.top + (allSpots.length > 0 ? 158 : 130)}]}>
+            <View style={{flex: 1}}>
+              {navigationProgress > 0.01 && (
+                <View style={{height: 4, backgroundColor: '#E0E0E0', borderRadius: 2, marginBottom: 10, overflow: 'hidden'}}>
+                  <View style={{height: '100%', backgroundColor: '#4CAF50', borderRadius: 2, width: `${Math.min(navigationProgress * 100, 100)}%`}} />
+                </View>
+              )}
+              <View style={{flexDirection: 'row'}}>
+                <View style={{flex: 1, alignItems: 'center'}}>
+                  <Text style={S.routeInfoVal}>{formatDistance(remainingDistance)}</Text>
+                  <Text style={S.routeInfoLbl}>{navigationProgress > 0.01 ? 'Remaining' : 'Distance'}</Text>
+                </View>
+                <View style={S.routeInfoDiv} />
+                <View style={{flex: 1, alignItems: 'center'}}>
+                  <Text style={S.routeInfoVal}>{formatDuration(remainingDuration)}</Text>
+                  <Text style={S.routeInfoLbl}>Duration</Text>
+                </View>
+                <View style={S.routeInfoDiv} />
+                <View style={{flex: 1, alignItems: 'center'}}>
+                  <Text style={S.routeInfoVal}>{navigationProgress > 0.01 ? `${(navigationProgress * 100).toFixed(0)}%` : routeInfo.stepsCount}</Text>
+                  <Text style={S.routeInfoLbl}>{navigationProgress > 0.01 ? 'Progress' : 'Steps'}</Text>
+                </View>
               </View>
             </View>
             <TouchableOpacity style={S.routeInfoClose} onPress={clearRoute}>
-              <Text style={S.routeInfoCloseText}>✕</Text>
+              <Text style={{fontSize: 16, color: '#666', fontWeight: '600'}}>✕</Text>
             </TouchableOpacity>
           </View>
         )}
 
-        <View style={[S.rightControls, { top: routeInfo ? insets.top + 185 : insets.top + 130 }]}>
-          <TouchableOpacity 
-            style={S.ctrlBtn} 
-            onPress={onLocate} 
-            onLongPress={showRouteStats}
-          >
-            <Text style={S.ctrlIcon}>📍</Text>
+        {/* RIGHT CONTROLS */}
+        <View style={[S.rightCtrls, {top: isNavigating ? insets.top + 240 : routeInfo ? insets.top + 235 : insets.top + 170}]}>
+          <TouchableOpacity style={S.ctrlBtn} onPress={onLocate} onLongPress={showRouteStats}>
+            <Text style={{fontSize: 24}}>📍</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={S.ctrlBtn} onPress={clearRoute}>
-            <Text style={S.ctrlIcon}>🧹</Text>
-          </TouchableOpacity>
+          {routeCoordinates && !isNavigating && (
+            <TouchableOpacity style={S.ctrlBtn} onPress={clearRoute}>
+              <Text style={{fontSize: 24}}>🧹</Text>
+            </TouchableOpacity>
+          )}
           <TouchableOpacity style={S.ctrlBtn} onPress={zoomIn}>
-            <Text style={S.ctrlIcon}>＋</Text>
+            <Text style={{fontSize: 24}}>＋</Text>
           </TouchableOpacity>
           <TouchableOpacity style={S.ctrlBtn} onPress={zoomOut}>
-            <Text style={S.ctrlIcon}>－</Text>
+            <Text style={{fontSize: 24}}>－</Text>
           </TouchableOpacity>
         </View>
 
-        <View style={[S.findParkingWrap, { bottom: 86 + insets.bottom }]}>
-          <TouchableOpacity style={S.findParkingBtn} onPress={onFindParking}>
-            <Text style={S.findParkingIcon}>🅿️</Text>
-            <Text style={S.findParkingText}>Find Parking</Text>
-            <View style={S.findParkingBadge}>
-              <Text style={S.findParkingBadgeText}>
-                {allSpots.filter(s => !s.isOccupied && !s.isMySpot).length}
-              </Text>
-            </View>
-          </TouchableOpacity>
-        </View>
+        {/* FIND PARKING BUTTON */}
+        {!isNavigating && (
+          <View style={[S.findWrap, {bottom: 86 + insets.bottom}]}>
+            <TouchableOpacity style={S.findBtn} onPress={onFindParking}>
+              <Text style={{fontSize: 24, marginRight: 10}}>🅿️</Text>
+              <Text style={{fontSize: 18, fontWeight: '800', color: '#fff'}}>Find Parking</Text>
+              <View style={S.findBadge}>
+                <Text style={{fontSize: 14, fontWeight: '800', color: '#E53935'}}>{availableCount}</Text>
+              </View>
+            </TouchableOpacity>
+          </View>
+        )}
 
-        <View style={[S.tabBar, { paddingBottom: Math.max(12, insets.bottom) }]}>
+        {/* END NAVIGATION BUTTON */}
+        {isNavigating && (
+          <View style={[S.endNavWrap, {bottom: 100 + insets.bottom}]}>
+            <TouchableOpacity style={S.endNavBtn} onPress={stopNavigation}>
+              <Text style={{fontSize: 22, color: '#fff', marginRight: 8, fontWeight: '700'}}>✕</Text>
+              <Text style={{fontSize: 17, fontWeight: '700', color: '#fff'}}>End Navigation</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* TAB BAR */}
+        <View style={[S.tabBar, {paddingBottom: Math.max(12, insets.bottom)}]}>
           <TouchableOpacity style={S.tabItem}>
-            <Text style={[S.tabIcon, S.tabIconActive]}>🗺️</Text>
-            <Text style={[S.tabLabel, S.tabLabelActive]}>Explore</Text>
+            <Text style={[S.tabIcon, S.tabActive]}>🗺️</Text>
+            <Text style={[S.tabLbl, S.tabActive]}>Explore</Text>
           </TouchableOpacity>
           <TouchableOpacity style={S.tabItem}>
             <Text style={S.tabIcon}>🔖</Text>
-            <Text style={S.tabLabel}>Saved</Text>
+            <Text style={S.tabLbl}>Saved</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={S.tabCenterPlus}>
-            <Text style={S.tabPlus}>＋</Text>
+          <TouchableOpacity style={S.tabCenter}>
+            <Text style={{fontSize: 36, color: '#fff', marginTop: -2}}>＋</Text>
           </TouchableOpacity>
           <TouchableOpacity style={S.tabItem}>
             <Text style={S.tabIcon}>👥</Text>
-            <Text style={S.tabLabel}>Contribute</Text>
+            <Text style={S.tabLbl}>Contribute</Text>
           </TouchableOpacity>
           <TouchableOpacity style={S.tabItem}>
             <Text style={S.tabIcon}>👤</Text>
-            <Text style={S.tabLabel}>Profile</Text>
+            <Text style={S.tabLbl}>Profile</Text>
           </TouchableOpacity>
         </View>
 
-        {/* Spot Details Modal */}
-        <Modal 
-          visible={showModal} 
-          transparent 
-          animationType="slide" 
-          onRequestClose={() => setShowModal(false)}
-        >
-          <View style={S.modalOverlay}>
+        {/* SPOT MODAL */}
+        <Modal visible={showModal} transparent animationType="slide" onRequestClose={() => setShowModal(false)}>
+          <View style={{flex: 1, justifyContent: 'flex-end'}}>
             <TouchableOpacity 
-              style={S.modalBackdrop} 
+              style={{...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.5)'}} 
               onPress={() => setShowModal(false)} 
+              activeOpacity={1} 
             />
             <View style={S.modalContent}>
               <View style={S.modalHandle} />
               <View style={S.modalHeader}>
-                <Text style={S.modalTitle}>
-                  {selectedSpot?.isMySpot ? '🚗 Your Spot' : '🅿️ Parking'}
+                <Text style={{fontSize: 22, fontWeight: '800', color: '#111'}}>
+                  {selectedSpot?.isMySpot ? '🚗 Your Spot' : '🅿️ Parking Spot'}
                 </Text>
                 <TouchableOpacity onPress={() => setShowModal(false)}>
-                  <Text style={S.modalClose}>✕</Text>
+                  <Text style={{fontSize: 28, color: '#999'}}>✕</Text>
                 </TouchableOpacity>
               </View>
               {selectedSpot && (
-                <ScrollView style={S.modalBody}>
-                  <View style={[
-                    S.statusBadge, 
-                    { backgroundColor: selectedSpot.isOccupied ? '#FFEBEE' : '#E8F5E9' }
-                  ]}>
-                    <Text style={[
-                      S.statusText, 
-                      { color: selectedSpot.isOccupied ? '#E53935' : '#4CAF50' }
-                    ]}>
+                <ScrollView style={{padding: 22}}>
+                  <View style={[S.statusBadge, {backgroundColor: selectedSpot.isOccupied ? '#FFEBEE' : '#E8F5E9'}]}>
+                    <Text style={[S.statusTxt, {color: selectedSpot.isOccupied ? '#E53935' : '#4CAF50'}]}>
                       {selectedSpot.isOccupied ? '🔴 Occupied' : '🟢 Available'}
                     </Text>
                   </View>
                   <View style={S.infoCard}>
-                    <Text style={S.infoRow}>
-                      📏 {formatDistance(selectedSpot.distance)}
-                    </Text>
-                    <Text style={S.infoRow}>
-                      🚗 {selectedSpot.deviceName}
-                    </Text>
-                    <Text style={S.infoRow}>
-                      🕐 {formatTime(selectedSpot.createdAt)}
-                    </Text>
+                    <Text style={S.infoRow}>📏 {formatDistance(selectedSpot.distance)}</Text>
+                    <Text style={S.infoRow}>🚗 {selectedSpot.deviceName || 'Unknown'}</Text>
+                    <Text style={S.infoRow}>🕐 {formatTime(selectedSpot.createdAt)}</Text>
+                    <Text style={S.infoRow}>📍 {selectedSpot.latitude?.toFixed(6)}, {selectedSpot.longitude?.toFixed(6)}</Text>
                   </View>
-                  <View style={S.noCacheBadge}>
-                    <Text style={S.noCacheBadgeText}>🔥 Routes fetched fresh (No Cache)</Text>
-                  </View>
-                  <View style={S.modalActions}>
-                    <TouchableOpacity 
-                      style={S.routeBtn} 
-                      onPress={() => onShowRoute(selectedSpot)}
-                    >
-                      <Text style={S.routeBtnText}>🗺️ Show Route</Text>
+                  <View style={{gap: 12}}>
+                    <TouchableOpacity style={S.routeBtn} onPress={() => onShowRoute(selectedSpot)}>
+                      <Text style={S.routeBtnTxt}>🗺️ Show Route</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity 
-                      style={S.navigationBtn} 
-                      onPress={() => onShowNavigation(selectedSpot)}
-                    >
-                      <Text style={S.navigationBtnText}>🧭 Turn-by-Turn</Text>
+                    <TouchableOpacity style={S.navBtn} onPress={() => onShowSteps(selectedSpot)}>
+                      <Text style={S.navBtnTxt}>📋 View Steps</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity 
-                      style={S.navigateBtn} 
-                      onPress={() => onNavigate(selectedSpot)}
-                    >
-                      <Text style={S.navigateBtnText}>📱 Google Maps</Text>
+                    <TouchableOpacity style={S.startBtn} onPress={() => onStartNavigation(selectedSpot)}>
+                      <Text style={S.startBtnTxt}>🧭 Start Navigation</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={S.extBtn} onPress={() => onNavigateExternal(selectedSpot)}>
+                      <Text style={S.extBtnTxt}>📱 Google Maps</Text>
                     </TouchableOpacity>
                   </View>
                 </ScrollView>
@@ -1167,57 +2295,66 @@ export default function ParkingMapScreen({ navigation }) {
           </View>
         </Modal>
 
-        {/* Navigation Modal */}
-        <Modal 
-          visible={showNavigation} 
-          transparent 
-          animationType="slide" 
-          onRequestClose={() => setShowNavigation(false)}
-        >
-          <SafeAreaView style={S.navModalContainer}>
+        {/* NAVIGATION STEPS MODAL */}
+        <Modal visible={showNavigation} transparent animationType="slide" onRequestClose={() => setShowNavigation(false)}>
+          <SafeAreaView style={{flex: 1, backgroundColor: 'rgba(0,0,0,0.5)'}}>
             <View style={S.navModalContent}>
               <View style={S.navModalHeader}>
-                <TouchableOpacity 
-                  onPress={() => setShowNavigation(false)} 
-                  style={S.navModalCloseBtn}
-                >
-                  <Text style={S.navModalClose}>←</Text>
+                <TouchableOpacity onPress={() => setShowNavigation(false)} style={S.navModalCloseBtn}>
+                  <Text style={{fontSize: 26, color: '#111', fontWeight: '600'}}>←</Text>
                 </TouchableOpacity>
-                <Text style={S.navModalTitle}>Navigation</Text>
-                <View style={{ width: 44 }} />
+                <Text style={{fontSize: 18, fontWeight: '800', color: '#111'}}>Navigation Steps</Text>
+                <TouchableOpacity 
+                  onPress={() => { 
+                    if (destination) { 
+                      setShowNavigation(false); 
+                      onStartNavigation(destination); 
+                    } 
+                  }} 
+                  style={S.navModalStartBtn}
+                >
+                  <Text style={{fontSize: 14, fontWeight: '700', color: '#fff'}}>▶️ Start</Text>
+                </TouchableOpacity>
               </View>
               {routeInfo && (
                 <View style={S.navSummary}>
-                  <View style={S.navSummaryItem}>
-                    <Text style={S.navSummaryValue}>
-                      {formatDistance(routeInfo.totalDistance)}
+                  <View style={{flex: 1, alignItems: 'center'}}>
+                    <Text style={S.navSumVal}>{formatDistance(remainingDistance)}</Text>
+                    <Text style={S.navSumLbl}>{navigationProgress > 0.01 ? 'Remaining' : 'Total'}</Text>
+                  </View>
+                  <View style={S.navSumDiv} />
+                  <View style={{flex: 1, alignItems: 'center'}}>
+                    <Text style={S.navSumVal}>{formatDuration(remainingDuration)}</Text>
+                    <Text style={S.navSumLbl}>Duration</Text>
+                  </View>
+                  <View style={S.navSumDiv} />
+                  <View style={{flex: 1, alignItems: 'center'}}>
+                    <Text style={S.navSumVal}>
+                      {navigationProgress > 0.01 ? `${(navigationProgress * 100).toFixed(0)}%` : routeInfo.stepsCount}
                     </Text>
-                    <Text style={S.navSummaryLabel}>Distance</Text>
+                    <Text style={S.navSumLbl}>{navigationProgress > 0.01 ? 'Progress' : 'Steps'}</Text>
                   </View>
-                  <View style={S.navSummaryDivider} />
-                  <View style={S.navSummaryItem}>
-                    <Text style={S.navSummaryValue}>
-                      {formatDuration(routeInfo.totalDuration)}
-                    </Text>
-                    <Text style={S.navSummaryLabel}>Duration</Text>
+                </View>
+              )}
+              {(isNavigating || navigationProgress > 0.01) && (
+                <View style={{padding: 16, backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#EEE'}}>
+                  <View style={{height: 10, backgroundColor: '#E0E0E0', borderRadius: 5, overflow: 'hidden'}}>
+                    <View style={{height: '100%', backgroundColor: '#4CAF50', borderRadius: 5, width: `${navigationProgress * 100}%`}} />
                   </View>
-                  <View style={S.navSummaryDivider} />
-                  <View style={S.navSummaryItem}>
-                    <Text style={S.navSummaryValue}>🔥</Text>
-                    <Text style={S.navSummaryLabel}>Fresh</Text>
-                  </View>
+                  <Text style={{fontSize: 13, color: '#666', marginTop: 10, textAlign: 'center', fontWeight: '500'}}>
+                    {formatDistance(totalDistanceRef.current - remainingDistance)} traveled ({(navigationProgress * 100).toFixed(0)}%)
+                  </Text>
                 </View>
               )}
               <FlatList 
                 data={navigationSteps} 
                 renderItem={renderStep} 
-                keyExtractor={(item) => item.id} 
-                contentContainerStyle={S.navStepsList} 
+                keyExtractor={stepKeyExtractor}
+                contentContainerStyle={{padding: 16}}
                 ListEmptyComponent={
-                  <View style={S.navEmptyState}>
-                    <Text style={S.navEmptyIcon}>🗺️</Text>
-                    <Text style={S.navEmptyText}>No navigation steps available</Text>
-                    <Text style={S.navEmptySubtext}>Route data fetched fresh from backend</Text>
+                  <View style={{alignItems: 'center', paddingVertical: 80}}>
+                    <Text style={{fontSize: 70, marginBottom: 24}}>🗺️</Text>
+                    <Text style={{fontSize: 16, color: '#666', fontWeight: '600'}}>No steps available</Text>
                   </View>
                 } 
               />
@@ -1229,378 +2366,118 @@ export default function ParkingMapScreen({ navigation }) {
   );
 }
 
-/* ─────────── STYLES ─────────── */
+export default function ParkingMapScreen(props) {
+  return (
+    <MapErrorBoundary>
+      <ParkingMapScreenInner {...props} />
+    </MapErrorBoundary>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════
+// STYLES
+// ═════════════════════════════════════════════════════════════
 const S = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#F8F9FA' },
-  container: { flex: 1 },
-  loading: { 
-    flex: 1, 
-    justifyContent: 'center', 
-    alignItems: 'center', 
-    backgroundColor: '#fff' 
-  },
-  loadingTitle: { 
-    marginTop: 16, 
-    fontSize: 16, 
-    fontWeight: '700',
-    color: '#111' 
-  },
-  loadingSubtitle: {
-    marginTop: 8,
-    fontSize: 13,
-    color: '#666',
-  },
-
-  routeLoadingOverlay: { 
-    position: 'absolute', 
-    top: 0, 
-    left: 0, 
-    right: 0, 
-    bottom: 0, 
-    backgroundColor: 'rgba(0,0,0,0.4)', 
-    justifyContent: 'center', 
-    alignItems: 'center', 
-    zIndex: 1000 
-  },
-  routeLoadingCard: { 
-    backgroundColor: '#fff', 
-    padding: 30, 
-    borderRadius: 20, 
-    alignItems: 'center', 
-    elevation: 10,
-    minWidth: 200,
-  },
-  routeLoadingText: { 
-    marginTop: 16, 
-    fontSize: 16, 
-    fontWeight: '700', 
-    color: '#111' 
-  },
-  routeLoadingSubtext: {
-    marginTop: 8,
-    fontSize: 13,
-    color: '#E53935',
-    fontWeight: '600',
-  },
-
-  searchBarWrap: { 
-    position: 'absolute', 
-    left: 16, 
-    right: 16, 
-    zIndex: 30 
-  },
-  searchBar: { 
-    height: 52, 
-    backgroundColor: '#fff', 
-    borderRadius: 16, 
-    paddingHorizontal: 16, 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    elevation: 8 
-  },
-  searchIcon: { fontSize: 18, marginRight: 10 },
-  searchInput: { flex: 1, fontSize: 15, color: '#111' },
-  searchClear: { fontSize: 18, color: '#999', marginRight: 10 },
-  searchActionBtn: { 
-    width: 36, 
-    height: 36, 
-    borderRadius: 12, 
-    backgroundColor: '#F5F5F5', 
-    justifyContent: 'center', 
-    alignItems: 'center' 
-  },
-  searchAction: { fontSize: 18, color: '#E53935', fontWeight: '700' },
-
-  topPillsRow: { 
-    position: 'absolute', 
-    left: 16, 
-    right: 16, 
-    flexDirection: 'row', 
-    justifyContent: 'space-between', 
-    zIndex: 25 
-  },
-  pillBtn: { 
-    backgroundColor: '#fff', 
-    paddingHorizontal: 16, 
-    height: 42, 
-    borderRadius: 21, 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    elevation: 4 
-  },
-  pillDisabled: { opacity: 0.5 },
-  pillIcon: { fontSize: 14, marginRight: 6 },
-  pillText: { fontSize: 13, fontWeight: '700', color: '#111' },
-
-  routeInfoCard: { 
-    position: 'absolute', 
-    left: 16, 
-    right: 16, 
-    backgroundColor: '#fff', 
-    borderRadius: 16, 
-    padding: 14, 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    elevation: 6, 
-    zIndex: 24 
-  },
-  routeInfoContent: { flex: 1, flexDirection: 'row' },
-  routeInfoItem: { flex: 1, alignItems: 'center' },
-  routeInfoValue: { fontSize: 16, fontWeight: '800', color: '#E53935' },
-  routeInfoLabel: { fontSize: 11, color: '#666', marginTop: 2 },
-  routeInfoDivider: { 
-    width: 1, 
-    height: 30, 
-    backgroundColor: '#E0E0E0', 
-    marginHorizontal: 8 
-  },
-  routeInfoClose: { 
-    width: 32, 
-    height: 32, 
-    borderRadius: 16, 
-    backgroundColor: '#F5F5F5', 
-    justifyContent: 'center', 
-    alignItems: 'center' 
-  },
-  routeInfoCloseText: { fontSize: 14, color: '#666' },
-
-  rightControls: { position: 'absolute', right: 16, zIndex: 20, gap: 10 },
-  ctrlBtn: { 
-    width: 48, 
-    height: 48, 
-    borderRadius: 14, 
-    backgroundColor: '#fff', 
-    justifyContent: 'center', 
-    alignItems: 'center', 
-    elevation: 4 
-  },
-  ctrlIcon: { fontSize: 20 },
-
-  findParkingWrap: { position: 'absolute', left: 20, right: 20, zIndex: 20 },
-  findParkingBtn: { 
-    height: 58, 
-    backgroundColor: '#E53935', 
-    borderRadius: 16, 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    justifyContent: 'center', 
-    elevation: 10 
-  },
-  findParkingIcon: { fontSize: 20, marginRight: 10 },
-  findParkingText: { fontSize: 17, fontWeight: '800', color: '#fff' },
-  findParkingBadge: { 
-    backgroundColor: '#fff', 
-    paddingHorizontal: 10, 
-    paddingVertical: 4, 
-    borderRadius: 12, 
-    marginLeft: 12 
-  },
-  findParkingBadgeText: { fontSize: 13, fontWeight: '800', color: '#E53935' },
-
-  tabBar: { 
-    position: 'absolute', 
-    left: 0, 
-    right: 0, 
-    bottom: 0, 
-    paddingTop: 12, 
-    backgroundColor: '#fff', 
-    borderTopLeftRadius: 24, 
-    borderTopRightRadius: 24, 
-    flexDirection: 'row', 
-    justifyContent: 'space-around', 
-    elevation: 15 
-  },
-  tabItem: { width: 60, alignItems: 'center', paddingVertical: 6 },
-  tabIcon: { fontSize: 22, color: '#666' },
-  tabLabel: { fontSize: 10, marginTop: 4, color: '#666', fontWeight: '600' },
-  tabIconActive: { color: '#E53935' },
-  tabLabelActive: { color: '#E53935' },
-  tabCenterPlus: { 
-    width: 60, 
-    height: 60, 
-    borderRadius: 30, 
-    backgroundColor: '#E53935', 
-    alignItems: 'center', 
-    justifyContent: 'center', 
-    marginBottom: 10, 
-    elevation: 10 
-  },
-  tabPlus: { fontSize: 32, color: '#fff' },
-
-  modalOverlay: { flex: 1, justifyContent: 'flex-end' },
-  modalBackdrop: { 
-    ...StyleSheet.absoluteFillObject, 
-    backgroundColor: 'rgba(0,0,0,0.4)' 
-  },
-  modalContent: { 
-    backgroundColor: '#fff', 
-    borderTopLeftRadius: 28, 
-    borderTopRightRadius: 28, 
-    maxHeight: '75%', 
-    elevation: 20 
-  },
-  modalHandle: { 
-    width: 40, 
-    height: 4, 
-    backgroundColor: '#DDD', 
-    borderRadius: 2, 
-    alignSelf: 'center', 
-    marginTop: 12 
-  },
-  modalHeader: { 
-    flexDirection: 'row', 
-    justifyContent: 'space-between', 
-    alignItems: 'center', 
-    padding: 20, 
-    borderBottomWidth: 1, 
-    borderBottomColor: '#F0F0F0' 
-  },
-  modalTitle: { fontSize: 20, fontWeight: '800', color: '#111' },
-  modalClose: { fontSize: 24, color: '#999' },
-  modalBody: { padding: 20 },
-
-  statusBadge: { 
-    alignSelf: 'flex-start', 
-    paddingHorizontal: 14, 
-    paddingVertical: 8, 
-    borderRadius: 20, 
-    marginBottom: 16 
-  },
-  statusText: { fontSize: 13, fontWeight: '700' },
-
-  infoCard: { 
-    backgroundColor: '#F8F9FA', 
-    borderRadius: 16, 
-    padding: 16, 
-    marginBottom: 12 
-  },
-  infoRow: { fontSize: 14, color: '#111', paddingVertical: 6 },
-
-  noCacheBadge: {
-    backgroundColor: '#FFF3E0',
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 16,
-    alignItems: 'center',
-  },
-  noCacheBadgeText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#E65100',
-  },
-
-  modalActions: { gap: 12 },
-  routeBtn: { 
-    backgroundColor: '#F0F0F0', 
-    padding: 16, 
-    borderRadius: 14, 
-    alignItems: 'center' 
-  },
-  routeBtnText: { fontSize: 15, fontWeight: '700', color: '#111' },
-  navigationBtn: { 
-    backgroundColor: '#FFF3E0', 
-    padding: 16, 
-    borderRadius: 14, 
-    alignItems: 'center' 
-  },
-  navigationBtnText: { fontSize: 15, fontWeight: '700', color: '#E65100' },
-  navigateBtn: { 
-    backgroundColor: '#E53935', 
-    padding: 16, 
-    borderRadius: 14, 
-    alignItems: 'center' 
-  },
-  navigateBtnText: { fontSize: 15, fontWeight: '700', color: '#fff' },
-
-  navModalContainer: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)' },
-  navModalContent: { 
-    flex: 1, 
-    backgroundColor: '#fff', 
-    marginTop: 60, 
-    borderTopLeftRadius: 28, 
-    borderTopRightRadius: 28, 
-    elevation: 20 
-  },
-  navModalHeader: { 
-    flexDirection: 'row', 
-    justifyContent: 'space-between', 
-    alignItems: 'center', 
-    padding: 18, 
-    borderBottomWidth: 1, 
-    borderBottomColor: '#F0F0F0' 
-  },
-  navModalCloseBtn: { 
-    width: 44, 
-    height: 44, 
-    borderRadius: 22, 
-    backgroundColor: '#F5F5F5', 
-    justifyContent: 'center', 
-    alignItems: 'center' 
-  },
-  navModalClose: { fontSize: 24, color: '#111' },
-  navModalTitle: { fontSize: 18, fontWeight: '800', color: '#111' },
-
-  navSummary: { 
-    flexDirection: 'row', 
-    padding: 16, 
-    backgroundColor: '#F8F9FA', 
-    borderBottomWidth: 1, 
-    borderBottomColor: '#EEE' 
-  },
-  navSummaryItem: { flex: 1, alignItems: 'center' },
-  navSummaryValue: { fontSize: 16, fontWeight: '800', color: '#111' },
-  navSummaryLabel: { fontSize: 11, color: '#666', marginTop: 2 },
-  navSummaryDivider: { 
-    width: 1, 
-    backgroundColor: '#E0E0E0', 
-    marginHorizontal: 10 
-  },
-
-  navStepsList: { padding: 16 },
-  navStep: { flexDirection: 'row', marginBottom: 6 },
-  navStepLeft: { alignItems: 'center', marginRight: 14 },
-  navIconContainer: { 
-    width: 48, 
-    height: 48, 
-    borderRadius: 24, 
-    backgroundColor: '#E53935', 
-    justifyContent: 'center', 
-    alignItems: 'center', 
-    elevation: 4 
-  },
-  navIcon: { fontSize: 22 },
-  navConnector: { 
-    width: 3, 
-    flex: 1, 
-    backgroundColor: '#E8E8E8', 
-    marginVertical: 6, 
-    borderRadius: 2 
-  },
-  navStepRight: { 
-    flex: 1, 
-    backgroundColor: '#F8F9FA', 
-    padding: 14, 
-    borderRadius: 14, 
-    marginBottom: 8 
-  },
-  navStepHeader: { 
-    flexDirection: 'row', 
-    justifyContent: 'space-between', 
-    marginBottom: 8 
-  },
-  navStepNumber: { fontSize: 11, color: '#666', fontWeight: '700' },
-  navStepDistance: { fontSize: 12, color: '#E53935', fontWeight: '800' },
-  navStepInstruction: { 
-    fontSize: 14, 
-    color: '#111', 
-    fontWeight: '700', 
-    marginBottom: 8, 
-    lineHeight: 20 
-  },
-  navStepDuration: { fontSize: 11, color: '#999' },
-
-  navEmptyState: { alignItems: 'center', paddingVertical: 60 },
-  navEmptyIcon: { fontSize: 60, marginBottom: 20 },
-  navEmptyText: { fontSize: 14, color: '#666' },
-  navEmptySubtext: { fontSize: 12, color: '#999', marginTop: 8 },
+  safe: {flex: 1, backgroundColor: '#F8F9FA'},
+  loading: {flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#fff'},
+  errorBoundary: {flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#fff', padding: 24},
+  errorBtn: {marginTop: 24, paddingHorizontal: 28, paddingVertical: 14, backgroundColor: '#E53935', borderRadius: 14},
+  navPanel: {position: 'absolute', top: 0, left: 0, right: 0, backgroundColor: '#fff', paddingTop: 50, paddingBottom: 16, paddingHorizontal: 16, borderBottomLeftRadius: 28, borderBottomRightRadius: 28, elevation: 20, shadowColor: '#000', shadowOffset: {width: 0, height: 8}, shadowOpacity: 0.25, shadowRadius: 12, zIndex: 100},
+  navPanelProgressWrap: {position: 'absolute', top: 0, left: 0, right: 0, height: 4, backgroundColor: '#E0E0E0'},
+  navPanelProgressFill: {height: '100%', backgroundColor: '#4CAF50'},
+  navPanelHeader: {flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14},
+  navPanelCloseBtn: {width: 44, height: 44, borderRadius: 22, backgroundColor: '#F5F5F5', justifyContent: 'center', alignItems: 'center'},
+  navPanelCloseTxt: {fontSize: 22, color: '#666', fontWeight: '600'},
+  navPanelETA: {fontSize: 20, fontWeight: '800', color: '#4CAF50'},
+  navPanelDist: {fontSize: 18, fontWeight: '700', color: '#333'},
+  navPanelSmBtn: {width: 40, height: 40, borderRadius: 20, backgroundColor: '#F5F5F5', justifyContent: 'center', alignItems: 'center'},
+  navPanelCard: {flexDirection: 'row', alignItems: 'center', backgroundColor: '#1976D2', borderRadius: 20, padding: 18, marginBottom: 12, elevation: 6},
+  navPanelIconBox: {width: 64, height: 64, borderRadius: 32, backgroundColor: '#fff', justifyContent: 'center', alignItems: 'center', marginRight: 16, elevation: 3},
+  navPanelTurnDist: {fontSize: 28, fontWeight: '900', color: '#fff', marginBottom: 4},
+  navPanelInstruction: {fontSize: 17, fontWeight: '600', color: 'rgba(255,255,255,0.95)', lineHeight: 22},
+  navPanelNext: {flexDirection: 'row', alignItems: 'center', backgroundColor: '#F5F5F5', borderRadius: 14, padding: 12, borderWidth: 1, borderColor: '#E0E0E0'},
+  navPanelNextIconBox: {width: 38, height: 38, borderRadius: 19, backgroundColor: '#E0E0E0', justifyContent: 'center', alignItems: 'center', marginRight: 12},
+  endNavWrap: {position: 'absolute', left: 20, right: 20, zIndex: 50},
+  endNavBtn: {height: 56, backgroundColor: '#E53935', borderRadius: 28, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', elevation: 10},
+  userMarkerContainer: {alignItems: 'center', justifyContent: 'center'},
+  userMarkerAccuracy: {position: 'absolute', backgroundColor: 'rgba(25,118,210,0.1)', borderWidth: 1, borderColor: 'rgba(25,118,210,0.3)'},
+  userMarkerOuter: {width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(25,118,210,0.2)', justifyContent: 'center', alignItems: 'center'},
+  userMarkerOuterNav: {width: 56, height: 56, borderRadius: 28, backgroundColor: 'rgba(25,118,210,0.25)'},
+  userMarkerInner: {width: 26, height: 26, borderRadius: 13, backgroundColor: '#1976D2', borderWidth: 4, borderColor: '#fff', justifyContent: 'center', alignItems: 'center', elevation: 6},
+  userMarkerInnerNav: {width: 34, height: 34, borderRadius: 17, borderWidth: 5},
+  userMarkerArrowWrap: {position: 'absolute', width: 60, height: 60, justifyContent: 'flex-start', alignItems: 'center'},
+  userMarkerArrow2: {width: 0, height: 0, borderLeftWidth: 10, borderRightWidth: 10, borderBottomWidth: 20, borderLeftColor: 'transparent', borderRightColor: 'transparent', borderBottomColor: '#1976D2', marginTop: -25},
+  tilesLoading: {position: 'absolute', top: '45%', alignSelf: 'center', backgroundColor: '#fff', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 12, borderRadius: 25, elevation: 8, gap: 10, zIndex: 50},
+  markerTouchable: {alignItems: 'center'},
+  markerContainer: {width: 46, height: 46, borderRadius: 23, borderWidth: 3, borderColor: '#fff', justifyContent: 'center', alignItems: 'center', elevation: 8, shadowColor: '#000', shadowOffset: {width: 0, height: 2}, shadowOpacity: 0.25, shadowRadius: 4},
+  markerIcon: {fontSize: 20},
+  markerArrow: {width: 0, height: 0, borderLeftWidth: 10, borderRightWidth: 10, borderTopWidth: 12, borderLeftColor: 'transparent', borderRightColor: 'transparent', marginTop: -3},
+  destMarker: {width: 54, height: 54, borderRadius: 27, backgroundColor: '#4CAF50', borderWidth: 4, borderColor: '#fff', justifyContent: 'center', alignItems: 'center', elevation: 10},
+  destMarkerArrow: {width: 0, height: 0, borderLeftWidth: 14, borderRightWidth: 14, borderTopWidth: 16, borderLeftColor: 'transparent', borderRightColor: 'transparent', borderTopColor: '#4CAF50', marginTop: -4},
+  routeLoadingOverlay: {position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', zIndex: 1000},
+  routeLoadingCard: {backgroundColor: '#fff', padding: 32, borderRadius: 24, alignItems: 'center', elevation: 15},
+  searchWrap: {position: 'absolute', left: 16, right: 16, zIndex: 30},
+  searchBar: {height: 54, backgroundColor: '#fff', borderRadius: 18, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', elevation: 8},
+  searchBtn: {width: 38, height: 38, borderRadius: 12, backgroundColor: '#F5F5F5', justifyContent: 'center', alignItems: 'center'},
+  pillsRow: {position: 'absolute', left: 16, right: 16, flexDirection: 'row', justifyContent: 'space-between', zIndex: 25},
+  pill: {backgroundColor: '#fff', paddingHorizontal: 16, height: 42, borderRadius: 21, flexDirection: 'row', alignItems: 'center', elevation: 6, shadowColor: '#000', shadowOffset: {width: 0, height: 2}, shadowOpacity: 0.12, shadowRadius: 4},
+  pillOff: {opacity: 0.5},
+  pillTxt: {fontSize: 13, fontWeight: '700', color: '#111'},
+  spotsBadge: {position: 'absolute', left: 16, right: 16, backgroundColor: '#fff', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10, elevation: 4, zIndex: 24},
+  routeInfoCard: {position: 'absolute', left: 16, right: 16, backgroundColor: '#fff', borderRadius: 18, padding: 16, flexDirection: 'row', alignItems: 'center', elevation: 8, zIndex: 24},
+  routeInfoVal: {fontSize: 18, fontWeight: '800', color: '#E53935'},
+  routeInfoLbl: {fontSize: 11, color: '#666', marginTop: 2, fontWeight: '500'},
+  routeInfoDiv: {width: 1, height: 36, backgroundColor: '#E0E0E0', marginHorizontal: 12},
+  routeInfoClose: {width: 36, height: 36, borderRadius: 18, backgroundColor: '#F5F5F5', justifyContent: 'center', alignItems: 'center'},
+  rightCtrls: {position: 'absolute', right: 16, zIndex: 20, gap: 10},
+  ctrlBtn: {width: 52, height: 52, borderRadius: 16, backgroundColor: '#fff', justifyContent: 'center', alignItems: 'center', elevation: 6},
+  findWrap: {position: 'absolute', left: 20, right: 20, zIndex: 20},
+  findBtn: {height: 62, backgroundColor: '#E53935', borderRadius: 20, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', elevation: 12},
+  findBadge: {backgroundColor: '#fff', paddingHorizontal: 14, paddingVertical: 6, borderRadius: 16, marginLeft: 14},
+  tabBar: {position: 'absolute', left: 0, right: 0, bottom: 0, paddingTop: 14, backgroundColor: '#fff', borderTopLeftRadius: 26, borderTopRightRadius: 26, flexDirection: 'row', justifyContent: 'space-around', elevation: 20},
+  tabItem: {width: 60, alignItems: 'center', paddingVertical: 6},
+  tabIcon: {fontSize: 24, color: '#999'},
+  tabLbl: {fontSize: 10, marginTop: 4, color: '#999', fontWeight: '600'},
+  tabActive: {color: '#E53935'},
+  tabCenter: {width: 64, height: 64, borderRadius: 32, backgroundColor: '#E53935', alignItems: 'center', justifyContent: 'center', marginBottom: 14, elevation: 12},
+  modalContent: {backgroundColor: '#fff', borderTopLeftRadius: 32, borderTopRightRadius: 32, maxHeight: '80%', elevation: 25},
+  modalHandle: {width: 48, height: 5, backgroundColor: '#DDD', borderRadius: 3, alignSelf: 'center', marginTop: 14},
+  modalHeader: {flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 22, borderBottomWidth: 1, borderBottomColor: '#F0F0F0'},
+  statusBadge: {alignSelf: 'flex-start', paddingHorizontal: 18, paddingVertical: 10, borderRadius: 24, marginBottom: 18},
+  statusTxt: {fontSize: 14, fontWeight: '700'},
+  infoCard: {backgroundColor: '#F8F9FA', borderRadius: 18, padding: 18, marginBottom: 20, borderWidth: 1, borderColor: '#F0F0F0'},
+  infoRow: {fontSize: 15, color: '#111', paddingVertical: 8, fontWeight: '500'},
+  routeBtn: {backgroundColor: '#F0F0F0', padding: 18, borderRadius: 16, alignItems: 'center'},
+  routeBtnTxt: {fontSize: 16, fontWeight: '700', color: '#111'},
+  navBtn: {backgroundColor: '#FFF3E0', padding: 18, borderRadius: 16, alignItems: 'center', borderWidth: 1, borderColor: '#FFE0B2'},
+  navBtnTxt: {fontSize: 16, fontWeight: '700', color: '#E65100'},
+  startBtn: {backgroundColor: '#4CAF50', padding: 18, borderRadius: 16, alignItems: 'center', elevation: 4},
+  startBtnTxt: {fontSize: 16, fontWeight: '700', color: '#fff'},
+  extBtn: {backgroundColor: '#E53935', padding: 18, borderRadius: 16, alignItems: 'center', elevation: 4},
+  extBtnTxt: {fontSize: 16, fontWeight: '700', color: '#fff'},
+  navModalContent: {flex: 1, backgroundColor: '#fff', marginTop: 60, borderTopLeftRadius: 32, borderTopRightRadius: 32, elevation: 25},
+  navModalHeader: {flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 18, borderBottomWidth: 1, borderBottomColor: '#F0F0F0'},
+  navModalCloseBtn: {width: 46, height: 46, borderRadius: 23, backgroundColor: '#F5F5F5', justifyContent: 'center', alignItems: 'center'},
+  navModalStartBtn: {paddingHorizontal: 18, paddingVertical: 12, borderRadius: 22, backgroundColor: '#4CAF50', elevation: 3},
+  navSummary: {flexDirection: 'row', padding: 18, backgroundColor: '#F8F9FA', borderBottomWidth: 1, borderBottomColor: '#EEE'},
+  navSumVal: {fontSize: 20, fontWeight: '800', color: '#111'},
+  navSumLbl: {fontSize: 11, color: '#666', marginTop: 3, fontWeight: '500'},
+  navSumDiv: {width: 1, backgroundColor: '#E0E0E0', marginHorizontal: 12},
+  navStep: {flexDirection: 'row', marginBottom: 8},
+  navStepCurrent: {backgroundColor: '#FFF8E1', borderRadius: 18, marginLeft: -10, marginRight: -10, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 2, borderColor: '#FFE082'},
+  navStepPast: {opacity: 0.5},
+  navStepLeft: {alignItems: 'center', marginRight: 14},
+  navIconBox: {width: 50, height: 50, borderRadius: 25, backgroundColor: '#E53935', justifyContent: 'center', alignItems: 'center', elevation: 5},
+  navIconBoxCurrent: {backgroundColor: '#FF9800', width: 58, height: 58, borderRadius: 29, borderWidth: 3, borderColor: '#FFE082'},
+  navIconBoxPast: {backgroundColor: '#9E9E9E'},
+  navConnector: {width: 4, flex: 1, backgroundColor: '#E53935', marginVertical: 6, borderRadius: 2},
+  navConnectorPast: {backgroundColor: '#BDBDBD'},
+  navStepRight: {flex: 1, backgroundColor: '#F8F9FA', padding: 16, borderRadius: 16, marginBottom: 8, borderWidth: 1, borderColor: '#F0F0F0'},
+  navStepRightCurrent: {backgroundColor: '#FFECB3', borderWidth: 2, borderColor: '#FF9800'},
+  navStepNum: {fontSize: 11, color: '#666', fontWeight: '700', textTransform: 'uppercase'},
+  navStepDist: {fontSize: 14, color: '#E53935', fontWeight: '800'},
+  navStepInstr: {fontSize: 16, color: '#111', fontWeight: '700', marginBottom: 6, lineHeight: 23},
+  navStepTxtPast: {color: '#9E9E9E'},
+  navStepBadge: {backgroundColor: '#FF9800', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 14, alignSelf: 'flex-start', marginTop: 10, elevation: 2},
+  navStepBadgeTxt: {fontSize: 13, fontWeight: '700', color: '#fff'},
 });

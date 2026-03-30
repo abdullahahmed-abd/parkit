@@ -6,7 +6,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const API_BASE_URL =
-  'https://3fca-2405-201-3037-e001-b079-bd76-8a44-f0e6.ngrok-free.app';
+  'https://9802-2405-201-3037-e001-b44d-1ecd-8775-95d2.ngrok-free.app';
 
 const API_CONFIG = {
   baseUrl: API_BASE_URL,
@@ -80,7 +80,7 @@ const ParkingService = {
       );
     }
 
-    const body = {latitude, longitude, eventType};
+    const body = {latitude, longitude, eventType,userId:"User-eaa9c94a-a5d3-4de1-92da-3aaab76a60c6"};
 
     Logger.info('PARKING_API', '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     Logger.info('PARKING_API', `Sending ${eventType} event`);
@@ -121,7 +121,7 @@ const ParkingService = {
         );
       }
 
-      Logger.success('PARKING_API', `✅ ${eventType} event SUCCESS`);
+      Logger.success('PARKING_API', `${eventType} event SUCCESS`);
 
       return {
         success: true,
