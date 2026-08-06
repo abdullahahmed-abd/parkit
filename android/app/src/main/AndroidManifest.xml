@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-<uses-permission android:name="android.permission.VIBRATE"/>
+    <uses-permission android:name="android.permission.VIBRATE"/>
     <!-- 🌍 Internet & Network access -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -67,7 +67,7 @@
     <uses-feature android:name="android.hardware.location.gps" android:required="false" />
 
     <application
-        android:name="com.islamicbank.newapp.MainApplication"
+        android:name=".MainApplication"
         android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -79,25 +79,25 @@
 
         <!-- ✅ Foreground service for activity recognition updates -->
         <service
-            android:name="com.islamicbank.newapp.ActivityRecognitionService"
+            android:name=".ActivityRecognitionService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
         <!-- ═══ Bluetooth Monitoring Foreground Service ═══ -->
         <service
-            android:name="com.islamicbank.newapp.bluetooth.BluetoothService"
+            android:name=".bluetooth.BluetoothService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
 
         <!-- ✅ Receiver that gets activity updates -->
         <receiver
-            android:name="com.islamicbank.newapp.ActivityRecognitionReceiver"
+            android:name=".ActivityRecognitionReceiver"
             android:exported="false" />
 
         <!-- ✅ Boot receiver to restart service after reboot/app update -->
         <receiver
-            android:name="com.islamicbank.newapp.BootReceiver"
+            android:name=".BootReceiver"
             android:enabled="true"
             android:exported="true">
             <intent-filter>
@@ -107,7 +107,7 @@
         </receiver>
 
         <activity
-            android:name="com.islamicbank.newapp.MainActivity"
+            android:name=".MainActivity"
             android:label="@string/app_name"
             android:screenOrientation="portrait"
             android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
@@ -115,7 +115,41 @@
             android:windowSoftInputMode="adjustResize"
             android:exported="true">
 
-            <!-- 🔗 Deep linking -->
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <!-- 🅿️ PARKIT DEEP LINKS - NEW ADDITION -->
+            <!-- ═══════════════════════════════════════════════════════ -->
+            
+            <!-- ✅ ParkIt Login Success Deep Link -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="parkit" android:host="login-success" />
+            </intent-filter>
+
+            <!-- ✅ ParkIt OAuth Redirect -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="parkit" android:host="oauth2redirect" />
+            </intent-filter>
+
+            <!-- ✅ ParkIt Other Deep Links (Optional - Future Use) -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="parkit" android:host="booking-success" />
+                <data android:scheme="parkit" android:host="payment-success" />
+                <data android:scheme="parkit" android:host="payment-failed" />
+            </intent-filter>
+
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <!-- 🏦 ISLAMIC BANK DEEP LINKS - EXISTING -->
+            <!-- ═══════════════════════════════════════════════════════ -->
+
+            <!-- 🔗 Islamic Bank OAuth Deep linking -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
