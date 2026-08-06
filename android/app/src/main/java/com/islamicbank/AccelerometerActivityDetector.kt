@@ -1,4 +1,4 @@
-package com.islamicbank.newapp
+package com.parkit.newapp
 
 import android.content.Context
 import android.hardware.Sensor

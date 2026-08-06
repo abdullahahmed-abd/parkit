@@ -1,4 +1,4 @@
-package com.islamicbank.newapp
+package com.parkit.newapp
 
 import com.facebook.react.ReactPackage
 import com.facebook.react.bridge.NativeModule

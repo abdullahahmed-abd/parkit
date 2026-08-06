@@ -1,6 +1,6 @@
 // android/app/src/main/java/com/yourapp/bluetooth/BluetoothPackage.kt
 
-package com.islamicbank.newapp
+package com.parkit.newapp
 
 import com.facebook.react.ReactPackage
 import com.facebook.react.bridge.NativeModule

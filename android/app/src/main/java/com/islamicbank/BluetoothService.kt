@@ -1,6 +1,6 @@
 // android/app/src/main/java/com/yourapp/bluetooth/BluetoothService.kt
 
-package com.islamicbank.newapp
+package com.parkit.newapp
 
 import android.app.*
 import android.bluetooth.BluetoothAdapter

@@ -154,16 +154,16 @@
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="islamicbank" android:host="oauth2redirect" />
+                <data android:scheme="parkit" android:host="oauth2redirect" />
             </intent-filter>
 
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="islamicbank" android:host="login-success" />
-                <data android:scheme="islamicbank" android:host="payment-success" />
-                <data android:scheme="islamicbank" android:host="payment-failed" />
+                <data android:scheme="parkit" android:host="login-success" />
+                <data android:scheme="parkit" android:host="payment-success" />
+                <data android:scheme="parkit" android:host="payment-failed" />
             </intent-filter>
 
             <!-- 🚀 Launcher -->

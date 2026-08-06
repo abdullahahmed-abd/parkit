@@ -14,14 +14,14 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
-    namespace "com.islamicbank.newapp"
+    namespace "com.parkit.newapp"
 
     buildFeatures {
         buildConfig true
     }
 
     defaultConfig {
-        applicationId "com.islamicbank.newapp"
+        applicationId "com.parkit.newapp"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
 
