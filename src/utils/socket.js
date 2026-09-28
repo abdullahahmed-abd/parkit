@@ -19,14 +19,14 @@ export const connectWebSocket = (
   senderIdGlobal = userId;
   messageCallback = onMessageReceived;
 
-  console.log("🚀 Connecting WebSocket for user:", userId);
-  console.log("🌐 Connecting STOMP WebSocket to:", backendUrl);
+ console.log(" Connecting WebSocket for user:", userId);
+ console.log(" Connecting STOMP WebSocket to:", backendUrl);
 
   socket = new W3CWebSocket(backendUrl);
   socket.binaryType = "arraybuffer";
 
   socket.onopen = () => {
-    console.log("  WebSocket opened — sending STOMP CONNECT...");
+ console.log(" WebSocket opened — sending STOMP CONNECT...");
 
     const connectFrame =
       "CONNECT\naccept-version:1.2\nhost:" +
@@ -37,7 +37,7 @@ export const connectWebSocket = (
 
     const encoder = new TextEncoder();
     socket.send(encoder.encode(connectFrame));
-    console.log("📨 STOMP CONNECT frame sent (encoded)!");
+ console.log(" STOMP CONNECT frame sent (encoded)!");
   };
 
 
@@ -50,47 +50,47 @@ socket.onmessage = (msg) => {
     data = msg.data;
   }
 
-  console.log("📩 Raw Message:", data);
+ console.log(" Raw Message:", data);
 
   if (data.startsWith("CONNECTED")) {
-    console.log("🎉 STOMP CONNECTED — subscribing to /queue/" + senderIdGlobal);
+ console.log(" STOMP CONNECTED — subscribing to /queue/" + senderIdGlobal);
 
-    // 🟢 Subscribe to personal queue
+ // Subscribe to personal queue
     const subscribeFrame =
       "SUBSCRIBE\nid:sub-0\ndestination:/queue/" +
       senderIdGlobal +
       "\nack:auto\n\n\0";
     socket.send(new TextEncoder().encode(subscribeFrame));
 
-    // 🛑 Subscribe to error queue (/user/queue/error)
+ // Subscribe to error queue (/user/queue/error)
     const errorSubscribeFrame =
       "SUBSCRIBE\nid:sub-err\ndestination:/user/queue/error\nack:auto\n\n\0";
     socket.send(new TextEncoder().encode(errorSubscribeFrame));
 
-    console.log("🟢 Subscribed to /queue/" + senderIdGlobal);
-    console.log("🚨 Subscribed to /user/queue/error");
+ console.log(" Subscribed to /queue/" + senderIdGlobal);
+ console.log(" Subscribed to /user/queue/error");
 
     onConnected && onConnected();
   }
 
   else if (data.startsWith("MESSAGE")) {
-    console.log("💌 STOMP MESSAGE received:", data);
+ console.log(" STOMP MESSAGE received:", data);
     const bodyStart = data.indexOf("\n\n") + 2;
     let body = data.substring(bodyStart).replace(/\u0000/g, "").trim();
 
     try {
       const parsed = JSON.parse(body);
 
-      // ⚠ Error Message Handling
+ // Error Message Handling
       if (parsed.type === "USER_NOT_FOUND" || parsed.type === "ERROR") {
-        console.error(
+ console.error(
           `🚨 WebSocket Error: ${parsed.message} at ${parsed.timestamp}`
         );
         alert(parsed.message); // or showToast(parsed.message)
         return;
       }
 
-      //   Chat message validation
+ // Chat message validation
       if (
         parsed.senderPhoneNumber &&
         parsed.receiverPhoneNumber &&
@@ -103,32 +103,32 @@ socket.onmessage = (msg) => {
       ) {
         messageCallback && messageCallback(parsed);
       } else {
-        console.log("⚠ Message ignored — belongs to another chat");
+ console.log(" Message ignored — belongs to another chat");
       }
     } catch (err) {
-      console.error("   Error parsing STOMP message:", err);
+ console.error(" Error parsing STOMP message:", err);
     }
   }
 
   else if (data.startsWith("ERROR")) {
-    console.error("🚨 STOMP ERROR:", data);
+ console.error(" STOMP ERROR:", data);
   }
 };
 
   socket.onerror = (err) => {
-    console.error("     WebSocket error:", err.message || err);
+ console.error(" WebSocket error:", err.message || err);
   };
 
   socket.onclose = (e) => {
-    console.warn("🔴 WebSocket closed:", e.code, e.reason);
+ console.warn(" WebSocket closed:", e.code, e.reason);
     onDisconnected && onDisconnected();
   };
 };
 
-//   Send message
+// Send message
 export const sendMessageWS = (messageObj) => {
   if (!socket || socket.readyState !== 1) {
-    console.warn("⚠️ Cannot send message — socket not open");
+ console.warn(" Cannot send message — socket not open");
     return;
   }
 
@@ -138,14 +138,14 @@ export const sendMessageWS = (messageObj) => {
     "\0";
 
   socket.send(new TextEncoder().encode(frame));
-  console.log("💬 Sent STOMP message:", messageObj);
+ console.log(" Sent STOMP message:", messageObj);
 };
 
 
-//   Disconnect cleanly
+// Disconnect cleanly
 export const disconnectWebSocket = () => {
   if (socket && socket.readyState === 1) {
-    console.log("🔌 Disconnecting WebSocket...");
+ console.log(" Disconnecting WebSocket...");
     socket.close();
   }
   socket = null;

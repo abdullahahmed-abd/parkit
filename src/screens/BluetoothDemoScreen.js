@@ -289,7 +289,7 @@ const BluetoothDemoScreen = () => {
     setLocStatus(fresh ? '📡 LIVE GPS...' : '📡 GPS...');
     try {
       const native = await getNativeLoc(fresh);
-      if (native) { if (mountRef.current) setLocStatus('GPS ✅'); return { ...native, source: native.source || 'GPS' }; }
+      if (native) { if (mountRef.current) setLocStatus('GPS '); return { ...native, source: native.source || 'GPS' }; }
 
       const ip = await getIPLoc();
       if (ip) { if (mountRef.current) setLocStatus(`${ip.city} (IP) ⚠️`); return ip; }
@@ -453,7 +453,7 @@ const BluetoothDemoScreen = () => {
         res[PermissionsAndroid.PERMISSIONS.ACTIVITY_RECOGNITION] === PermissionsAndroid.RESULTS.GRANTED;
 
       if (mountRef.current) {
-        setLocStatus(locOk ? 'Permission ✅' : 'Permission ❌');
+        setLocStatus(locOk ? 'Permission ' : 'Permission ❌');
         setAr(p => ({ ...p, perm: arOk }));
       }
 
@@ -591,7 +591,7 @@ const BluetoothDemoScreen = () => {
     setConnected(true);
     setConnDev(dev);
     setConnTime(now.toLocaleTimeString());
-    L.log('✅ UI updated: CONNECTED');
+    L.log('UI updated: CONNECTED');
 
     // Get live location
     L.log('📡 Getting LIVE location for CONNECT...');
@@ -621,7 +621,7 @@ const BluetoothDemoScreen = () => {
       activity: arRef.current.act,
     });
 
-    L.log('✅ CONNECT handled completely!');
+    L.log('CONNECT handled completely!');
     L.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   }, [shouldHandle, getLoc, store, arRef, addHistory, getDevName, selRef, clearGuidance]);
 
@@ -676,7 +676,7 @@ const BluetoothDemoScreen = () => {
     // Immediate UI update
     setConnected(false);
     setConnTime(now.toLocaleTimeString());
-    L.log('✅ UI updated: DISCONNECTED');
+    L.log('UI updated: DISCONNECTED');
 
     // Get live location (THIS IS PARKED LOCATION!)
     L.log('📡 Getting LIVE location for DISCONNECT (PARKED LOCATION)...');
@@ -709,7 +709,7 @@ const BluetoothDemoScreen = () => {
       activity: arRef.current.act,
     });
 
-    L.log('✅ DISCONNECT handled completely!');
+    L.log('DISCONNECT handled completely!');
     L.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
     // Reset flag after a short delay to allow any lingering events to be ignored
@@ -779,7 +779,7 @@ const BluetoothDemoScreen = () => {
         return;
       }
 
-      L.log('✅ BT listeners ready!');
+      L.log('BT listeners ready!');
 
       // Check if selected device is already connected
       const sel = selRef.current;
@@ -878,7 +878,7 @@ const BluetoothDemoScreen = () => {
 
     if (isAlreadyConnected) {
       // Device is already connected
-      L.log('✅ Selected device is ALREADY connected!');
+      L.log('Selected device is ALREADY connected!');
 
       const now = new Date();
       setConnected(true);
@@ -1378,7 +1378,7 @@ const BluetoothDemoScreen = () => {
               </TouchableOpacity>
             </View>
           </View>
-          <Text style={S.arInfo}>Perm: {ar.perm ? '✅' : '❌'} | {ar.on ? '🟢 Active' : '🔴 Off'}</Text>
+          <Text style={S.arInfo}>Perm: {ar.perm ? '' : '❌'} | {ar.on ? '🟢 Active' : '🔴 Off'}</Text>
           <View style={[S.actBox, { backgroundColor: actCfg.color }]}>
             <Text style={S.actIcon}>{actCfg.icon}</Text>
             <Text style={S.actLbl}>{actCfg.label}</Text>

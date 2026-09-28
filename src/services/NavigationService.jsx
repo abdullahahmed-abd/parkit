@@ -193,7 +193,7 @@ export const Logger = {
   info: (tag, msg, data) =>
     Logger._format('ℹ️', tag, msg, data, LOG_LEVELS.INFO),
   success: (tag, msg, data) =>
-    Logger._format('✅', tag, msg, data, LOG_LEVELS.INFO),
+    Logger._format('', tag, msg, data, LOG_LEVELS.INFO),
   warn: (tag, msg, data) =>
     Logger._format('⚠️', tag, msg, data, LOG_LEVELS.WARN),
   debug: (tag, msg, data) =>
@@ -735,7 +735,7 @@ export const VoiceGuidance = {
           Tts.addEventListener('tts-cancel', () =>
             Logger.verbose('VOICE', 'TTS cancelled'),
           );
-          // ✅ FIXED
+          // FIXED
 Tts.addEventListener('tts-error', (event) =>
   Logger.error(
     'VOICE',
@@ -1054,7 +1054,7 @@ export const RoutingService = {
         RouteCache.set(ck, result);
       }
 
-      Logger.success('ROUTE', `✅ #${rid}: ${coordinates.length} pts, ${steps.length} steps`);
+      Logger.success('ROUTE', `#${rid}: ${coordinates.length} pts, ${steps.length} steps`);
       return result;
     } catch (e) {
       this.failures++;
@@ -1195,7 +1195,7 @@ export class RerouteManager {
       if (this._callbacks.onRerouteSuccess) {
         this._callbacks.onRerouteSuccess(this.rerouteCount);
       }
-      Logger.success('REROUTE', `✅ Reroute #${this.rerouteCount} COMPLETE`);
+      Logger.success('REROUTE', `Reroute #${this.rerouteCount} COMPLETE`);
     } else {
       this.failedAttempts++;
       this.currentCooldown = NAV_CONFIG.REROUTE_FAILURE_COOLDOWN;
@@ -1431,7 +1431,7 @@ export class RouteLineManager {
     this.lastProgress = 0;
     this.lastSnappedIndex = 0;
     this.lastSnappedT = 0;
-    Logger.cleanup('✅ RouteLineManager cleared');
+    Logger.cleanup('RouteLineManager cleared');
   }
 
   getStats() {
@@ -1737,7 +1737,7 @@ export const NavigationDebug = {
         5000,
       );
       const success = response.ok;
-      Logger.info('DEBUG', `Backend connection: ${success ? '✅ OK' : '❌ Failed'}`);
+      Logger.info('DEBUG', `Backend connection: ${success ? 'OK' : '❌ Failed'}`);
       return success;
     } catch (error) {
       Logger.error('DEBUG', 'Backend connection failed', error);
@@ -1756,7 +1756,7 @@ export const cleanupNavigation = () => {
   stepTracker.reset();
   rerouteManager.reset();
   locationProcessor.reset();
-  Logger.cleanup('✅ Navigation cleanup complete');
+  Logger.cleanup('Navigation cleanup complete');
 };
 
 // ═══════════════════════════════════════════════════════════════

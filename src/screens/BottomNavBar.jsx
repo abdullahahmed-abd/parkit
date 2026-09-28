@@ -5,7 +5,7 @@ import { RFValue } from "react-native-responsive-fontsize";
 
 import { HugeiconsIcon } from "@hugeicons/react-native";
 
-// ✅ Icons: (Agar kisi ka name mismatch ho to mujhe error bhej do)
+// Icons:
 import {
   Activity01Icon,        // Explore (placeholder)
   SparklesIcon,          // Saved (placeholder)
@@ -104,7 +104,7 @@ const styles = StyleSheet.create({
     zIndex: 50,
   },
 
-  // ✅ iPhone style rounded floating bar (image jaisa)
+  // iPhone style rounded floating bar
   bar: {
     height: ms(64),
     backgroundColor: COLORS.white,
@@ -140,7 +140,7 @@ const styles = StyleSheet.create({
     color: COLORS.primary,
   },
 
-  // ✅ Center “+” style raised button
+  // Center “+” style raised button
   centerBtnWrap: {
     flex: 1,
     alignItems: "center",

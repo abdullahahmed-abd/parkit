@@ -6,12 +6,12 @@ import { Linking, StatusBar, ActivityIndicator, View, Text, StyleSheet } from 'r
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // ═══════════════════════════════════════
-// 📱 Import Context
+// Import Context
 // ═══════════════════════════════════════
 import { AppProvider, AppContext } from './src/context/AppContext';
 
 // ═══════════════════════════════════════
-// 📱 Import Screens
+// Import Screens
 // ═══════════════════════════════════════
 import Login from './src/screens/Login';
 import ParkingMapScreen from './src/screens/ParkingMapScreen';
@@ -25,7 +25,7 @@ import useParkingWebSocket from "./src/hooks/useParkingWebSocket"
 const Stack = createNativeStackNavigator();
 
 // ═══════════════════════════════════════
-// 🔄 Loading Screen Component
+// Loading Screen Component
 // ═══════════════════════════════════════
 const LoadingScreen = () => (
   <View style={styles.loadingContainer}>
@@ -35,23 +35,23 @@ const LoadingScreen = () => (
 );
 
 // ═══════════════════════════════════════
-// 🧭 Navigation Component
+// Navigation Component
 // ═══════════════════════════════════════
 const AppNavigator = () => {
   const navigationRef = useRef(null);
   const { userData, setUserData, isLoading } = useContext(AppContext);
 
   // ═══════════════════════════════════════
-  // 🔗 Deep Link Handler
+  // Deep Link Handler
   // ═══════════════════════════════════════
   useEffect(() => {
     const handleDeepLink = async ({ url }) => {
-      console.log('📩 Deep Link Received:', url);
+      console.log('Deep Link Received:', url);
 
       if (!url) return;
 
       try {
-        // ✅ ParkIt Login Success
+        // ParkIt Login Success
         if (url.startsWith('parkit://login-success')) {
           const queryString = url.split('?')[1];
           if (queryString) {
@@ -59,7 +59,7 @@ const AppNavigator = () => {
             const userId = params.get('userId');
 
             if (userId) {
-              console.log('✅ Login successful, userId:', userId);
+              console.log('Login successful, userId:', userId);
 
               // Save to AsyncStorage
               await AsyncStorage.setItem('userId', userId);
@@ -81,12 +81,12 @@ const AppNavigator = () => {
           }
         }
 
-        // ✅ ParkIt OAuth Redirect
+        // ParkIt OAuth Redirect
         else if (url.startsWith('parkit://oauth2redirect')) {
-          console.log('🔄 OAuth Redirect detected');
+          console.log('OAuth Redirect detected');
         }
 
-        // ✅ ParkIt Booking Success
+        // ParkIt Booking Success
         else if (url.startsWith('parkit://booking-success')) {
           const queryString = url.split('?')[1];
           if (queryString && navigationRef.current) {
@@ -96,7 +96,7 @@ const AppNavigator = () => {
           }
         }
 
-        // ✅ Payment Success/Failed
+        // Payment Success/Failed
         else if (url.startsWith('parkit://payment-success') || 
                  url.startsWith('parkit://payment-failed')) {
           const queryString = url.split('?')[1];
@@ -109,7 +109,7 @@ const AppNavigator = () => {
         }
 
       } catch (error) {
-        console.error('❌ Error handling deep link:', error);
+        console.error('Error handling deep link:', error);
       }
     };
 
@@ -119,7 +119,7 @@ const AppNavigator = () => {
     // Check initial URL (cold start)
     Linking.getInitialURL().then((url) => {
       if (url) {
-        console.log('📩 Initial URL:', url);
+        console.log('Initial URL:', url);
         handleDeepLink({ url });
       }
     });
@@ -130,7 +130,7 @@ const AppNavigator = () => {
   }, [setUserData]);
 
   // ═══════════════════════════════════════
-  // 🎨 Linking Configuration
+  // Linking Configuration
   // ═══════════════════════════════════════
   const linking = {
     prefixes: ['parkit://', 'https://parkit.app'],
@@ -164,9 +164,9 @@ const AppNavigator = () => {
         linking={linking}
         fallback={<LoadingScreen />}
         onReady={() => {
-          console.log('✅ Navigation Container Ready');
-          console.log('📱 Initial Route:', initialRoute);
-          console.log('👤 User Data:', userData);
+          console.log('Navigation Container Ready');
+          console.log('Initial Route:', initialRoute);
+          console.log('User Data:', userData);
         }}
       >
         <Stack.Navigator 
@@ -178,7 +178,7 @@ const AppNavigator = () => {
             gestureDirection: 'horizontal',
           }}
         >
-          {/* 🔐 Authentication Screens */}
+          {/* Authentication Screens */}
           <Stack.Screen 
             name="Login" 
             component={Login}
@@ -188,7 +188,7 @@ const AppNavigator = () => {
             }}
           />
 
-          {/* 🏠 Main App Screens */}
+          {/* Main App Screens */}
           <Stack.Screen 
             name="ParkingMap" 
             component={ParkingMapScreen}
@@ -243,7 +243,7 @@ const AppNavigator = () => {
 };
 
 // ═══════════════════════════════════════
-// 🚀 Main App Component with Provider
+// Main App Component with Provider
 // ═══════════════════════════════════════
 const App = () => {
   return (

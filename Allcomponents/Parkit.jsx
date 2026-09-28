@@ -59,7 +59,7 @@ const snapUserToRoute = (userLocation, routeCoordinates) => {
       return null;
     }
 
-    Logger.verbose('SNAP', `✅ Snapped: dist=${nearest.distance.toFixed(1)}m, seg=${nearest.segmentIndex}`);
+    Logger.verbose('SNAP', `Snapped: dist=${nearest.distance.toFixed(1)}m, seg=${nearest.segmentIndex}`);
     
     return {
       latitude: nearest.point.lat,
@@ -84,7 +84,7 @@ const SafeCleanup = {
       // Step 1: Stop voice
       try { 
         VoiceGuidance.stop(); 
-        Logger.verbose('CLEANUP', '✅ Voice stopped');
+        Logger.verbose('CLEANUP', 'Voice stopped');
       } catch (e) { 
         Logger.error('CLEANUP', 'Voice stop failed', e); 
       }
@@ -92,7 +92,7 @@ const SafeCleanup = {
       // Step 2: Reset step tracker
       try { 
         stepTracker.reset(); 
-        Logger.verbose('CLEANUP', '✅ StepTracker reset');
+        Logger.verbose('CLEANUP', 'StepTracker reset');
       } catch (e) { 
         Logger.error('CLEANUP', 'StepTracker reset failed', e); 
       }
@@ -100,7 +100,7 @@ const SafeCleanup = {
       // Step 3: Clear route manager
       try { 
         routeLineManager.clear(); 
-        Logger.verbose('CLEANUP', '✅ RouteLineManager cleared');
+        Logger.verbose('CLEANUP', 'RouteLineManager cleared');
       } catch (e) { 
         Logger.error('CLEANUP', 'RouteLineManager clear failed', e); 
       }
@@ -108,7 +108,7 @@ const SafeCleanup = {
       // Step 4: Reset location processor
       try { 
         locationProcessor.reset(); 
-        Logger.verbose('CLEANUP', '✅ LocationProcessor reset');
+        Logger.verbose('CLEANUP', 'LocationProcessor reset');
       } catch (e) { 
         Logger.error('CLEANUP', 'LocationProcessor reset failed', e); 
       }
@@ -140,10 +140,10 @@ const ParkingMarker = React.memo(({spot, onPress}) => {
 });
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ FIXED USER LOCATION MARKER (Uses snapped position)
+// FIXED USER LOCATION MARKER (Uses snapped position)
 // ═══════════════════════════════════════════════════════════════
 const UserLocationMarker = React.memo(({coordinate, heading, isNavigating, accuracy, snappedCoordinate}) => {
-  // ✅ Use snapped coordinate during navigation if available
+  // Use snapped coordinate during navigation if available
   const displayCoordinate = isNavigating && snappedCoordinate 
     ? snappedCoordinate 
     : coordinate;
@@ -157,7 +157,7 @@ const UserLocationMarker = React.memo(({coordinate, heading, isNavigating, accur
     transform: [{rotate: `${heading}deg`}]
   } : {};
 
-  // ✅ Log which coordinate is being used
+  // Log which coordinate is being used
   Logger.verbose('MARKER', 
     `📍 Rendering at: ${displayCoordinate[1]?.toFixed(6)}, ${displayCoordinate[0]?.toFixed(6)} ` +
     `(${isNavigating && snappedCoordinate ? 'SNAPPED' : 'RAW'})`
@@ -329,7 +329,7 @@ const LocationPermission = {
           const bg = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION);
           Logger.info('PERMISSION', `Background location result: ${bg}`);
         }
-        Logger.success('PERMISSION', '✅ Location permission granted');
+        Logger.success('PERMISSION', 'Location permission granted');
         return true;
       } catch (e) { 
         Logger.error('PERMISSION', 'Request failed', e);
@@ -374,7 +374,7 @@ function ParkingMapScreenInner({navigation}) {
   const renderCountRef = useRef(0);
   const routeCoordinatesRef = useRef(null);
 
-  // ✅ NEW: Snapped user position for blue dot
+  // NEW: Snapped user position for blue dot
   const [snappedUserCoord, setSnappedUserCoord] = useState(null);
   const snappedUserCoordRef = useRef(null);
 
@@ -429,7 +429,7 @@ function ParkingMapScreenInner({navigation}) {
   Logger.verbose('RENDER', `🔄 Render #${renderCountRef.current}`);
 
   // ═════════════════════════════════════════════════════════════
-  // ✅ SYNC routeCoordinates to ref for use in callbacks
+  // SYNC routeCoordinates to ref for use in callbacks
   // ═════════════════════════════════════════════════════════════
   useEffect(() => {
     routeCoordinatesRef.current = routeCoordinates;
@@ -529,7 +529,7 @@ function ParkingMapScreenInner({navigation}) {
   }, []);
 
   // ═════════════════════════════════════════════════════════════
-  // ✅ FIXED: UPDATE MARKER POSITION (with route snapping)
+  // FIXED: UPDATE MARKER POSITION (with route snapping)
   // ═════════════════════════════════════════════════════════════
   const updateMarkerPosition = useCallback((lat, lng, forceRaw = false) => {
     const now = Date.now();
@@ -539,7 +539,7 @@ function ParkingMapScreenInner({navigation}) {
 
     Logger.verbose('MARKER', `📍 Raw GPS: ${lat.toFixed(6)}, ${lng.toFixed(6)}`);
 
-    // ✅ FIX PROBLEM 1: Snap to route during navigation
+    // FIX PROBLEM 1: Snap to route during navigation
     if (isNavigatingRef.current && routeCoordinatesRef.current && routeCoordinatesRef.current.length > 1 && !forceRaw) {
       const userLoc = { latitude: lat, longitude: lng };
       const snapped = snapUserToRoute(userLoc, routeCoordinatesRef.current);
@@ -616,7 +616,7 @@ function ParkingMapScreenInner({navigation}) {
     if (locationWatchId.current !== null) {
       try { 
         Geolocation.clearWatch(locationWatchId.current); 
-        Logger.loc('✅ Navigation watch cleared');
+        Logger.loc('Navigation watch cleared');
       } catch (e) {
         Logger.error('LOC', 'clearWatch failed', e);
       }
@@ -625,7 +625,7 @@ function ParkingMapScreenInner({navigation}) {
     if (navIntervalRef.current) {
       try {
         clearInterval(navIntervalRef.current);
-        Logger.loc('✅ Nav interval cleared');
+        Logger.loc('Nav interval cleared');
       } catch (e) {
         Logger.error('LOC', 'clearInterval failed', e);
       }
@@ -638,7 +638,7 @@ function ParkingMapScreenInner({navigation}) {
     if (passiveWatchId.current !== null) {
       try { 
         Geolocation.clearWatch(passiveWatchId.current); 
-        Logger.loc('✅ Passive watch cleared');
+        Logger.loc('Passive watch cleared');
       } catch (e) {
         Logger.error('LOC', 'clearPassiveWatch failed', e);
       }
@@ -692,17 +692,17 @@ function ParkingMapScreenInner({navigation}) {
         LOCATION_TRACKING_CONFIG.PASSIVE
       );
       
-      Logger.success('LOC', '✅ Passive tracking started');
+      Logger.success('LOC', 'Passive tracking started');
     } catch (error) {
       Logger.error('LOC', 'Failed to start passive tracking', error);
     }
   }, [clearPassiveWatch, updateMarkerPosition]);
 
   // ═══════════════════════════════════════════════════════════
-  // ✅ FIXED: FULL CLEANUP (Prevents Problem 2 & 3 crashes)
+  // FIXED: FULL CLEANUP (Prevents Problem 2 & 3 crashes)
   // ═══════════════════════════════════════════════════════════
   const doFullCleanup = useCallback(async () => {
-    // ✅ Prevent double cleanup
+    // Prevent double cleanup
     if (isCleaningUpRef.current) {
       Logger.warn('CLEANUP', '⚠️ Cleanup already in progress, skipping');
       return;
@@ -712,7 +712,7 @@ function ParkingMapScreenInner({navigation}) {
     Logger.info('CLEANUP', '🧹 ═══ FULL CLEANUP STARTED ═══');
 
     try {
-      // ✅ Step 1: Set flags FIRST (prevents state updates during cleanup)
+      // Step 1: Set flags FIRST (prevents state updates during cleanup)
       isNavigatingRef.current = false;
       followUserRef.current = false;
       hasActiveRouteRef.current = false;
@@ -723,21 +723,21 @@ function ParkingMapScreenInner({navigation}) {
       totalDurationRef.current = 0;
       smoothedHeadingRef.current = 0;
 
-      Logger.verbose('CLEANUP', '✅ Refs reset');
+      Logger.verbose('CLEANUP', 'Refs reset');
 
-      // ✅ Step 2: Clear watches
+      // Step 2: Clear watches
       clearNavigationWatch();
-      Logger.verbose('CLEANUP', '✅ Navigation watch cleared');
+      Logger.verbose('CLEANUP', 'Navigation watch cleared');
 
-      // ✅ Step 3: Safe cleanup of services
+      // Step 3: Safe cleanup of services
       await SafeCleanup.cleanupNavigation();
-      Logger.verbose('CLEANUP', '✅ Services cleaned');
+      Logger.verbose('CLEANUP', 'Services cleaned');
 
-      // ✅ Step 4: Clear state (only if mounted)
+      // Step 4: Clear state (only if mounted)
       if (isMountedRef.current) {
         Logger.verbose('CLEANUP', '🔄 Clearing state...');
         
-        // ✅ IMPORTANT: Clear route coordinates BEFORE setting isNavigating
+        // IMPORTANT: Clear route coordinates BEFORE setting isNavigating
         routeCoordinatesRef.current = null;
         setRouteCoordinates(null);
         setNavigationSteps([]);
@@ -758,13 +758,13 @@ function ParkingMapScreenInner({navigation}) {
         setSnappedUserCoord(null);
         snappedUserCoordRef.current = null;
         
-        Logger.verbose('CLEANUP', '✅ State cleared');
+        Logger.verbose('CLEANUP', 'State cleared');
       }
 
-      // ✅ Step 5: Reset camera
+      // Step 5: Reset camera
       try { 
         cameraRef.current?.setCamera({pitch: 0, animationDuration: 500}); 
-        Logger.verbose('CLEANUP', '✅ Camera reset');
+        Logger.verbose('CLEANUP', 'Camera reset');
       } catch (e) {
         Logger.error('CLEANUP', 'Camera reset failed', e);
       }
@@ -779,54 +779,54 @@ function ParkingMapScreenInner({navigation}) {
   }, [clearNavigationWatch]);
 
   // ═══════════════════════════════════════════════════════════
-  // ✅ FIXED: HANDLE ARRIVAL (Prevents Problem 2 crash)
+  // FIXED: HANDLE ARRIVAL (Prevents Problem 2 crash)
   // ═══════════════════════════════════════════════════════════
   const handleArrival = useCallback(async () => {
     Logger.success('NAV', '🎉 ═══ HANDLING ARRIVAL ═══');
     
-    // ✅ Prevent multiple calls
+    // Prevent multiple calls
     if (!isNavigatingRef.current || isStoppingRef.current || isCleaningUpRef.current) {
       Logger.warn('NAV', '⚠️ Already handling arrival or not navigating');
       return;
     }
 
-    // ✅ Set flag immediately
+    // Set flag immediately
     isNavigatingRef.current = false;
     isStoppingRef.current = true;
     
     try {
-      // ✅ Announce arrival
+      // Announce arrival
       try { 
         VoiceGuidance.announceArrival(); 
-        Logger.verbose('NAV', '✅ Arrival announced');
+        Logger.verbose('NAV', 'Arrival announced');
       } catch (e) {
         Logger.error('NAV', 'Announce arrival failed', e);
       }
 
-      // ✅ Clear navigation watch
+      // Clear navigation watch
       clearNavigationWatch();
-      Logger.verbose('NAV', '✅ Watch cleared');
+      Logger.verbose('NAV', 'Watch cleared');
 
-      // ✅ Stop services
+      // Stop services
       try { VoiceGuidance.stop(); } catch (_) {}
       try { stepTracker.reset(); } catch (_) {}
       
-      // ✅ Update state (keep route visible for now)
+      // Update state (keep route visible for now)
       if (isMountedRef.current) { 
         setIsNavigating(false); 
         setFollowUser(false);
         setNavigationProgress(1);
-        Logger.verbose('NAV', '✅ Navigation state updated');
+        Logger.verbose('NAV', 'Navigation state updated');
       }
 
-      // ✅ Reset camera
+      // Reset camera
       try { 
         cameraRef.current?.setCamera({pitch: 0, animationDuration: 500}); 
       } catch (_) {}
 
       Logger.success('NAV', '🎉 Arrival handling complete - showing alert');
       
-      // ✅ Show alert AFTER state updates
+      // Show alert AFTER state updates
       setTimeout(() => {
         if (isMountedRef.current) {
           Alert.alert(
@@ -860,12 +860,12 @@ function ParkingMapScreenInner({navigation}) {
   }, [clearNavigationWatch, doFullCleanup, doStartPassiveTracking]);
 
   // ═══════════════════════════════════════════════════════════
-  // ✅ FIXED: STOP NAVIGATION (Prevents Problem 3 crash)
+  // FIXED: STOP NAVIGATION (Prevents Problem 3 crash)
   // ═══════════════════════════════════════════════════════════
   const stopNavigation = useCallback(async () => {
     Logger.nav('⏹️ ═══ STOP NAVIGATION CALLED ═══');
     
-    // ✅ Prevent multiple calls
+    // Prevent multiple calls
     if (isStoppingRef.current || isCleaningUpRef.current) {
       Logger.warn('NAV', '⚠️ Already stopping/cleaning, skipping');
       return;
@@ -874,25 +874,25 @@ function ParkingMapScreenInner({navigation}) {
     isStoppingRef.current = true;
     
     try {
-      // ✅ Step 1: Set flags immediately
+      // Step 1: Set flags immediately
       isNavigatingRef.current = false;
       followUserRef.current = false;
       smoothedHeadingRef.current = 0;
       
-      Logger.verbose('NAV', '✅ Flags set');
+      Logger.verbose('NAV', 'Flags set');
 
-      // ✅ Step 2: Clear location tracking
+      // Step 2: Clear location tracking
       clearNavigationWatch();
-      Logger.verbose('NAV', '✅ Watch cleared');
+      Logger.verbose('NAV', 'Watch cleared');
 
-      // ✅ Step 3: Stop services (with try-catch)
+      // Step 3: Stop services (with try-catch)
       try { VoiceGuidance.stop(); } catch (e) { Logger.error('NAV', 'Voice stop failed', e); }
       try { stepTracker.reset(); } catch (e) { Logger.error('NAV', 'StepTracker reset failed', e); }
       try { locationProcessor.reset(); } catch (e) { Logger.error('NAV', 'LocationProcessor reset failed', e); }
       
-      Logger.verbose('NAV', '✅ Services stopped');
+      Logger.verbose('NAV', 'Services stopped');
 
-      // ✅ Step 4: Clear route state FIRST (prevents render errors)
+      // Step 4: Clear route state FIRST (prevents render errors)
       if (isMountedRef.current) {
         Logger.verbose('NAV', '🔄 Clearing route state...');
         
@@ -917,21 +917,21 @@ function ParkingMapScreenInner({navigation}) {
         setSnappedUserCoord(null);
         snappedUserCoordRef.current = null;
         
-        Logger.verbose('NAV', '✅ State cleared');
+        Logger.verbose('NAV', 'State cleared');
       }
 
-      // ✅ Step 5: Clear route manager
+      // Step 5: Clear route manager
       try { 
         routeLineManager.clear(); 
-        Logger.verbose('NAV', '✅ RouteLineManager cleared');
+        Logger.verbose('NAV', 'RouteLineManager cleared');
       } catch (e) {
         Logger.error('NAV', 'RouteLineManager clear failed', e);
       }
 
-      // ✅ Step 6: Reset camera
+      // Step 6: Reset camera
       try { 
         cameraRef.current?.setCamera({pitch: 0, animationDuration: 500}); 
-        Logger.verbose('NAV', '✅ Camera reset');
+        Logger.verbose('NAV', 'Camera reset');
       } catch (e) {
         Logger.error('NAV', 'Camera reset failed', e);
       }
@@ -939,7 +939,7 @@ function ParkingMapScreenInner({navigation}) {
       hasActiveRouteRef.current = false;
       Logger.success('NAV', '⏹️ ═══ NAVIGATION STOPPED SUCCESSFULLY ═══');
 
-      // ✅ Step 7: Restart passive tracking (delayed)
+      // Step 7: Restart passive tracking (delayed)
       setTimeout(() => {
         if (isMountedRef.current && !isNavigatingRef.current) {
           Logger.loc('🔄 Restarting passive tracking...');
@@ -1009,7 +1009,7 @@ function ParkingMapScreenInner({navigation}) {
       setCurrentStepIndex(0);
       setNavigationProgress(0);
       
-      Logger.success('NAV', `✅ Reroute complete: ${coords.length} pts, ${steps.length} steps`);
+      Logger.success('NAV', `Reroute complete: ${coords.length} pts, ${steps.length} steps`);
     } catch (e) { 
       Logger.error('NAV', 'Reroute failed', e); 
     } finally { 
@@ -1018,10 +1018,10 @@ function ParkingMapScreenInner({navigation}) {
   }, [destination]);
 
   // ═══════════════════════════════════════════════════════════════
-  // ✅ FIXED: ROUTE VISUAL UPDATER (calls handleArrival)
+  // FIXED: ROUTE VISUAL UPDATER (calls handleArrival)
   // ═══════════════════════════════════════════════════════════════
   const updateRouteVisual = useCallback(currentLoc => {
-    // ✅ Safety checks
+    // Safety checks
     if (!isMountedRef.current || !currentLoc || isStoppingRef.current || isCleaningUpRef.current) {
       Logger.verbose('ROUTE', 'Skipping update - safety check failed');
       return;
@@ -1037,14 +1037,14 @@ function ParkingMapScreenInner({navigation}) {
     if (now - lastRouteUpdateRef.current < 300) return;
     lastRouteUpdateRef.current = now;
 
-    // ✅ Check arrival FIRST
+    // Check arrival FIRST
     if (routeLineManager.hasArrived(currentLoc)) {
       Logger.success('NAV', '🎉 ARRIVAL DETECTED!');
       handleArrival();
       return;
     }
 
-    // ✅ Update visible route
+    // Update visible route
     const visibleRoute = routeLineManager.getVisibleRoute(currentLoc);
     if (!visibleRoute) {
       Logger.verbose('ROUTE', 'No visible route returned');
@@ -1076,7 +1076,7 @@ function ParkingMapScreenInner({navigation}) {
       } : prev);
     }
 
-    // ✅ Update steps and check off-route
+    // Update steps and check off-route
     if (isNavigatingRef.current && !isStoppingRef.current && !isCleaningUpRef.current) {
       if (routeLineManager.isOffRoute(currentLoc)) {
         Logger.warn('NAV', '⚠️ Off route detected, rerouting...');
@@ -1108,7 +1108,7 @@ function ParkingMapScreenInner({navigation}) {
       try {
         const enabled = await new Promise((resolve) => {
           Geolocation.getCurrentPosition(
-            () => { Logger.loc('✅ Location enabled'); resolve(true); },
+            () => { Logger.loc('Location enabled'); resolve(true); },
             () => { Logger.warn('LOC', '❌ Location disabled'); resolve(false); },
             { timeout: 3000 }
           );
@@ -1134,10 +1134,10 @@ function ParkingMapScreenInner({navigation}) {
   }, []);
 
   // ═══════════════════════════════════════════════════════════
-  // ✅ IMPROVED NAVIGATION TRACKING v5.4
+  // IMPROVED NAVIGATION TRACKING v5.4
   // ═══════════════════════════════════════════════════════════
 // ═══════════════════════════════════════════════════════════
-// ✅ FIXED: NAVIGATION TRACKING v5.5 - LOCATION FIX
+// FIXED: NAVIGATION TRACKING v5.5 - LOCATION FIX
 // ═══════════════════════════════════════════════════════════
 const startLocationTracking = useCallback(() => {
   Logger.loc('🧭 ═══ STARTING NAVIGATION TRACKING v5.5 ═══');
@@ -1159,7 +1159,7 @@ const startLocationTracking = useCallback(() => {
   let watchWorking = false;
   let fallbackActive = false;
 
-  // ✅ UNIFIED LOCATION PROCESSOR
+  // UNIFIED LOCATION PROCESSOR
   const processLocation = (latitude, longitude, accuracy, heading, speed, source) => {
     if (!isMountedRef.current || isStoppingRef.current || isCleaningUpRef.current) {
       Logger.verbose('LOC', 'Skipping - stopping/cleaning');
@@ -1202,13 +1202,13 @@ const startLocationTracking = useCallback(() => {
       lastLogTime = now;
     }
 
-    // ✅ Batch state updates
+    // Batch state updates
     requestAnimationFrame(() => {
       if (!isMountedRef.current || isStoppingRef.current) return;
 
       lastLocationRef.current = newLoc;
       
-      // ✅ This will snap to route during navigation!
+      // This will snap to route during navigation!
       updateMarkerPosition(latitude, longitude, false);
 
       if (heading !== null && !isNaN(heading) && heading >= 0) {
@@ -1229,7 +1229,7 @@ const startLocationTracking = useCallback(() => {
   };
 
   // ═══════════════════════════════════════════════════════
-  // ✅ METHOD 1: watchPosition - TRY MULTIPLE CONFIGS
+  // METHOD 1: watchPosition - TRY MULTIPLE CONFIGS
   // ═══════════════════════════════════════════════════════
   const startWatch = (configName, config) => {
     try {
@@ -1249,7 +1249,7 @@ const startLocationTracking = useCallback(() => {
         config
       );
       
-      Logger.success('LOC', `✅ watchPosition [${configName}] started`);
+      Logger.success('LOC', `watchPosition [${configName}] started`);
       return true;
     } catch (e) {
       Logger.error('LOC', `Failed to start watchPosition [${configName}]`, e);
@@ -1257,7 +1257,7 @@ const startLocationTracking = useCallback(() => {
     }
   };
 
-  // ✅ TRY CONFIG 1: Standard (no forceLocationManager)
+  // TRY CONFIG 1: Standard (no forceLocationManager)
   let watchStarted = startWatch('STANDARD', {
     enableHighAccuracy: true,
     distanceFilter: 5,
@@ -1265,13 +1265,13 @@ const startLocationTracking = useCallback(() => {
     fastestInterval: 1000,
     timeout: 20000,
     maximumAge: 5000,
-    forceLocationManager: false,  // ✅ KEY FIX!
+    forceLocationManager: false,  // KEY FIX!
     showLocationDialog: true,
     forceRequestLocation: false,
   });
 
   // ═══════════════════════════════════════════════════════
-  // ✅ METHOD 2: FALLBACK with getCurrentPosition
+  // METHOD 2: FALLBACK with getCurrentPosition
   // ═══════════════════════════════════════════════════════
   const doFallbackFetch = () => {
     if (!isMountedRef.current || !isNavigatingRef.current || isStoppingRef.current) return;
@@ -1282,7 +1282,7 @@ const startLocationTracking = useCallback(() => {
     Geolocation.getCurrentPosition(
       pos => {
         const {latitude, longitude, accuracy, heading, speed} = pos.coords;
-        Logger.loc(`✅ Fallback HIGH: ${latitude.toFixed(6)}, ${longitude.toFixed(6)} ±${accuracy?.toFixed(0)}m`);
+        Logger.loc(`Fallback HIGH: ${latitude.toFixed(6)}, ${longitude.toFixed(6)} ±${accuracy?.toFixed(0)}m`);
         processLocation(latitude, longitude, accuracy || 50, heading, speed, 'FALLBACK-HIGH');
       },
       err => {
@@ -1292,7 +1292,7 @@ const startLocationTracking = useCallback(() => {
         Geolocation.getCurrentPosition(
           pos => {
             const {latitude, longitude, accuracy, heading, speed} = pos.coords;
-            Logger.loc(`✅ Fallback LOW: ${latitude.toFixed(6)}, ${longitude.toFixed(6)} ±${accuracy?.toFixed(0)}m`);
+            Logger.loc(`Fallback LOW: ${latitude.toFixed(6)}, ${longitude.toFixed(6)} ±${accuracy?.toFixed(0)}m`);
             processLocation(latitude, longitude, accuracy || 100, heading, speed, 'FALLBACK-LOW');
           },
           err2 => {
@@ -1313,7 +1313,7 @@ const startLocationTracking = useCallback(() => {
     );
   };
 
-  // ✅ Do first fallback immediately (don't wait for watch)
+  // Do first fallback immediately (don't wait for watch)
   setTimeout(() => {
     if (!watchWorking && isMountedRef.current && isNavigatingRef.current) {
       Logger.warn('LOC', '⚠️ Watch not producing results, doing immediate fallback...');
@@ -1322,7 +1322,7 @@ const startLocationTracking = useCallback(() => {
   }, 3000);
 
   // ═══════════════════════════════════════════════════════
-  // ✅ METHOD 3: HEALTH MONITOR + PERIODIC FALLBACK
+  // METHOD 3: HEALTH MONITOR + PERIODIC FALLBACK
   // ═══════════════════════════════════════════════════════
   navIntervalRef.current = setInterval(() => {
     if (!isMountedRef.current || !isNavigatingRef.current || isStoppingRef.current) {
@@ -1361,13 +1361,13 @@ const startLocationTracking = useCallback(() => {
       }
     } else {
       if (fallbackActive) {
-        Logger.success('LOC', '✅ Watch recovered - deactivating fallback');
+        Logger.success('LOC', 'Watch recovered - deactivating fallback');
         fallbackActive = false;
       }
     }
   }, 3000); // Check every 3 seconds
 
-  Logger.success('LOC', '✅ Navigation tracking started (watch + smart fallback)');
+  Logger.success('LOC', 'Navigation tracking started (watch + smart fallback)');
 }, [updateRouteVisual, clearPassiveWatch, clearNavigationWatch, updateMarkerPosition]);
   // ═══════════════════════════════════════════════════════════
   // START NAVIGATION
@@ -1394,7 +1394,7 @@ const startLocationTracking = useCallback(() => {
     setFollowUser(true);
     setCurrentStepIndex(0);
 
-    Logger.verbose('NAV', '✅ Navigation state set');
+    Logger.verbose('NAV', 'Navigation state set');
 
     startLocationTracking();
 
@@ -1415,7 +1415,7 @@ const startLocationTracking = useCallback(() => {
       }
     }, 300);
     
-    Logger.success('NAV', '✅ Navigation started successfully');
+    Logger.success('NAV', 'Navigation started successfully');
   }, [startLocationTracking, checkLocationEnabled]);
 
   // ═══════════════════════════════════════════════════════════
@@ -1438,7 +1438,7 @@ const startLocationTracking = useCallback(() => {
           pitch: isNavigatingRef.current ? NAV_CONFIG.NAVIGATION_TILT : 0,
           animationDuration: 600,
         });
-        Logger.verbose('CAMERA', '✅ Recentered');
+        Logger.verbose('CAMERA', 'Recentered');
       } catch (error) {
         Logger.error('CAMERA', 'Recenter failed', error);
       }
@@ -1540,7 +1540,7 @@ const startLocationTracking = useCallback(() => {
           }
         }, 500);
         
-        Logger.success('INIT', '✅ Initialization complete');
+        Logger.success('INIT', 'Initialization complete');
       } catch (error) {
         Logger.error('INIT', '❌ Initialization failed', error);
         setLoading(false);
@@ -1591,7 +1591,7 @@ const startLocationTracking = useCallback(() => {
       try { stepTracker.reset(); } catch (_) {}
       try { locationProcessor.reset(); } catch (_) {}
       sub.remove();
-      Logger.success('CLEANUP', '✅ Unmount cleanup complete');
+      Logger.success('CLEANUP', 'Unmount cleanup complete');
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1659,12 +1659,12 @@ const startLocationTracking = useCallback(() => {
       setNavigationProgress(0);
       fitBounds(coords);
 
-      Logger.success('NAV', `✅ Route ready: ${coords.length} pts, ${steps.length} steps, ${formatDistance(route.distance)}`);
+      Logger.success('NAV', `Route ready: ${coords.length} pts, ${steps.length} steps, ${formatDistance(route.distance)}`);
 
       if (startNav) {
         setTimeout(() => startNavigation(), 500);
       } else {
-        Alert.alert('✅ Route Ready',
+        Alert.alert('Route Ready',
           `📏 ${formatDistance(route.distance)}\n⏱️ ${formatDuration(route.duration)}\n📝 ${steps.length} steps`,
           [
             {text: 'View Steps', onPress: () => setShowNavigation(true)},
@@ -1732,8 +1732,8 @@ const startLocationTracking = useCallback(() => {
           updateMarkerPosition(loc.latitude, loc.longitude, true);
           await loadSpots(loc, true);
           flyTo(loc.latitude, loc.longitude, 17, true);
-          Alert.alert('✅ Spot Occupied!', 'Your parking spot has been saved.');
-          Logger.success('PARKING', '✅ Spot occupied');
+          Alert.alert('Spot Occupied!', 'Your parking spot has been saved.');
+          Logger.success('PARKING', 'Spot occupied');
         } catch (error) { 
           Logger.error('PARKING', 'Occupy failed', error);
           Alert.alert('❌ Failed', error.message); 
@@ -1754,8 +1754,8 @@ const startLocationTracking = useCallback(() => {
           const vacated = await ParkingService.vacateSpot(mySpot.latitude, mySpot.longitude);
           setMySpot(vacated);
           await loadSpots(userLoc, true);
-          Alert.alert('✅ Spot Vacated!', 'Your parking spot is now available.');
-          Logger.success('PARKING', '✅ Spot vacated');
+          Alert.alert('Spot Vacated!', 'Your parking spot is now available.');
+          Logger.success('PARKING', 'Spot vacated');
         } catch (error) { 
           Logger.error('PARKING', 'Vacate failed', error);
           Alert.alert('❌ Failed', error.message); 
@@ -1821,7 +1821,7 @@ const startLocationTracking = useCallback(() => {
     const stats = NavigationDebug.getFullStatus();
     const loc = lastLocationRef.current || userLoc;
     Alert.alert('📊 Debug v5.4',
-      `📡 Routing: ${stats.routing.total} total | ✅ ${stats.routing.success} | ❌ ${stats.routing.fail} | 🚀 ${stats.routing.cache} cached\n\n` +
+      `📡 Routing: ${stats.routing.total} total | ${stats.routing.success} | ❌ ${stats.routing.fail} | 🚀 ${stats.routing.cache} cached\n\n` +
       `🅿️ Spots: ${allSpots.length} (${allSpots.filter(s => !s.isOccupied).length} available)\n\n` +
       `📍 Location: ${locationSource}\n📌 ${loc.latitude.toFixed(6)}, ${loc.longitude.toFixed(6)}\n🎯 Accuracy: ±${locationAccuracy.toFixed(0)}m\n\n` +
       `🗺️ Route: ${hasActiveRouteRef.current ? 'ACTIVE' : 'NONE'}\n📏 Remaining: ${formatDistance(remainingDistance)}\n📈 Progress: ${(navigationProgress * 100).toFixed(0)}%\n\n` +
@@ -1879,7 +1879,7 @@ const startLocationTracking = useCallback(() => {
   const occupiedCount = useMemo(() => allSpots.filter(s => s.isOccupied).length, [allSpots]);
 
   // ═════════════════════════════════════════════════════════════
-  // ✅ SAFE ROUTE VISUALIZATION HELPER
+  // SAFE ROUTE VISUALIZATION HELPER
   // ═════════════════════════════════════════════════════════════
   const renderRoute = useMemo(() => {
     // Safety checks
@@ -1983,7 +1983,7 @@ const startLocationTracking = useCallback(() => {
           {searchMarker && !isNavigating && <SearchMarker coordinate={searchMarker} />}
           {destination && <DestinationMarker coordinate={destination} />}
 
-          {/* ✅ SAFE ROUTE VISUALIZATION */}
+          {/* SAFE ROUTE VISUALIZATION */}
           {renderRoute && (
             <>
               {/* TRAVELED ROUTE (GRAY) */}
@@ -2048,7 +2048,7 @@ const startLocationTracking = useCallback(() => {
             </>
           )}
 
-          {/* ✅ FIXED: User marker with snapped coordinate */}
+          {/* FIXED: User marker with snapped coordinate */}
           <UserLocationMarker
             coordinate={userMarkerCoord}
             heading={userHeading}

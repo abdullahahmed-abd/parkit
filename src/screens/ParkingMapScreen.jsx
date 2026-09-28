@@ -1,9 +1,9 @@
 // src/screens/ParkingMapScreen.js
 // PARKIT - Parking Map Screen (Production behaviour)
-// ✅ AUTO-FETCH PARKING SPOTS ON APP START
-// ✅ AUTO-OPEN FIND PARKING SHEET
-// ✅ AUTO-HIT USER'S LIVE LOCATION (No manual click needed)
-// ✅ WEBSOCKET REAL-TIME SLOT NOTIFICATIONS
+// AUTO-FETCH PARKING SPOTS ON APP START
+// AUTO-OPEN FIND PARKING SHEET
+// AUTO-HIT USER'S LIVE LOCATION (No manual click needed)
+// WEBSOCKET REAL-TIME SLOT NOTIFICATIONS
 
 import React, {
   useEffect,
@@ -41,12 +41,12 @@ import { scale, moderateScale, verticalScale } from 'react-native-size-matters';
 import ParkingService from '../services/ParkingService';
 import AppContext from '../context/AppContext';
 
-// ✅ WebSocket Hook & Components
+// WebSocket Hook & Components
 import useParkingWebSocket, { WS_STATUS } from '../hooks/useParkingWebSocket';
 import SlotFreeNotification from '../components/SlotFreeNotification';
 import WsStatusDot from '../components/WsStatusDot';
 
-// ✅ Bottom bar
+// Bottom bar
 import BottomNavBar from './BottomNavBar';
 
 import {
@@ -1008,7 +1008,7 @@ function ParkingMapScreenInner({ navigation, route }) {
 
   const [showSpotsSheet, setShowSpotsSheet] = useState(false);
 
-  // ── ✅ WebSocket notification state ───────────────────────────
+  // ── WebSocket notification state ───────────────────────────
   const [slotFreeNotif, setSlotFreeNotif] = useState(null);
 
   // ── Keep refs synced ──────────────────────────────────────────
@@ -1479,7 +1479,7 @@ function ParkingMapScreenInner({ navigation, route }) {
 
         setAllSpots(combined);
 
-        // ✅ Auto-open sheet after first load
+        // Auto-open sheet after first load
         if (!hasAutoOpenedRef.current && combined.length > 0) {
           hasAutoOpenedRef.current = true;
           setTimeout(() => {
@@ -2077,7 +2077,7 @@ function ParkingMapScreenInner({ navigation, route }) {
     setVoiceEnabled(enabled);
   }, []);
 
-  // ── ✅ WebSocket callbacks ─────────────────────────────────────
+  // ── WebSocket callbacks ─────────────────────────────────────
   const handleSlotFree = useCallback(
     (wsMessage) => {
       // wsMessage = { type, latitude, longitude, message }
@@ -2120,14 +2120,14 @@ function ParkingMapScreenInner({ navigation, route }) {
   );
 
   const handleWsConnected = useCallback(() => {
-    Logger.success('WS', '✅ Real-time parking updates active');
+    Logger.success('WS', 'Real-time parking updates active');
   }, []);
 
   const handleWsDisconnected = useCallback(() => {
     Logger.warn('WS', '⚠️ Real-time updates disconnected');
   }, []);
 
-  // ── ✅ WebSocket hook ──────────────────────────────────────────
+  // ── WebSocket hook ──────────────────────────────────────────
   const {
     status: wsStatus,
     reconnect: wsReconnect,
@@ -2139,12 +2139,12 @@ function ParkingMapScreenInner({ navigation, route }) {
     enabled: !!currentUserId,
   });
 
-  // ── ✅ Dismiss notification ────────────────────────────────────
+  // ── Dismiss notification ────────────────────────────────────
   const dismissSlotFreeNotif = useCallback(() => {
     setSlotFreeNotif(null);
   }, []);
 
-  // ── ✅ Navigate to free slot ───────────────────────────────────
+  // ── Navigate to free slot ───────────────────────────────────
   const navigateToFreeSlot = useCallback(
     (slotInfo) => {
       setSlotFreeNotif(null);
@@ -2955,7 +2955,7 @@ function ParkingMapScreenInner({ navigation, route }) {
           </View>
         )}
 
-        {/* ── ✅ WebSocket status dot ───────────────────────────── */}
+        {/* ── WebSocket status dot ───────────────────────────── */}
         {!isNavigating && (
           <View
             style={[
@@ -2974,7 +2974,7 @@ function ParkingMapScreenInner({ navigation, route }) {
           </View>
         )}
 
-        {/* ── ✅ Slot Free Notification Banner ─────────────────── */}
+        {/* ── Slot Free Notification Banner ─────────────────── */}
         <SlotFreeNotification
           visible={!!slotFreeNotif}
           message={slotFreeNotif?.message}
@@ -3299,7 +3299,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 
-  // ── ✅ WebSocket status ────────────────────────────────────
+  // ── WebSocket status ────────────────────────────────────
   wsStatusWrap: {
     position: 'absolute',
     right: s(66),

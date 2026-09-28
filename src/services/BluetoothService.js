@@ -153,11 +153,11 @@ class BluetoothServiceClass {
       if (this._isModuleAvailable && typeof BluetoothModule.startListening === 'function') {
         log('Calling native startListening...');
         await BluetoothModule.startListening();
-        log('✅ Native BroadcastReceiver registered!');
+        log('Native BroadcastReceiver registered!');
       }
 
       this._isListening = true;
-      log('✅ ✅ ✅ All 3 event listeners registered:');
+      log('All 3 event listeners registered:');
       log('   1. BluetoothDeviceConnected');
       log('   2. BluetoothDeviceDisconnected');
       log('   3. BluetoothStateChanged');
@@ -181,7 +181,7 @@ class BluetoothServiceClass {
       }
       this._callbacks = { onConnect: null, onDisconnect: null, onStateChange: null };
       this._isListening = false;
-      log('✅ All Bluetooth listeners stopped');
+      log('All Bluetooth listeners stopped');
     } catch (e) {
       logError('stopListening:', e?.message);
       this._isListening = false;
@@ -212,7 +212,7 @@ class BluetoothServiceClass {
     if (this._listeners.length === 0) return;
     log(`Removing ${this._listeners.length} listeners...`);
     this._listeners.forEach((sub, i) => {
-      try { sub?.remove(); log(`  Listener ${i + 1} removed ✅`); }
+      try { sub?.remove(); log(`  Listener ${i + 1} removed `); }
       catch (e) { logError(`  Listener ${i + 1} error:`, e?.message); }
     });
     this._listeners = [];

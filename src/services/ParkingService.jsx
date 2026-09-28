@@ -5,7 +5,7 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-// ✅ Import Auth Functions
+// Import Auth Functions
 import {
   getValidAccessToken,
   refreshAccessToken,
@@ -13,7 +13,7 @@ import {
 } from '../utils/GoogleAuthHandler';
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ CONFIGURATION - UPDATE YOUR BACKEND URL HERE
+// CONFIGURATION - UPDATE YOUR BACKEND URL HERE
 // ═══════════════════════════════════════════════════════════════
 const API_BASE_URL = 'https://parkit.sundukpay.com';
 
@@ -55,7 +55,7 @@ const Logger = {
     this._log('ℹ️', tag, msg, data);
   },
   success(tag, msg, data) {
-    this._log('✅', tag, msg, data);
+    this._log('', tag, msg, data);
   },
   error(tag, msg, err) {
     this._log('❌', tag, msg, err?.message || err);
@@ -66,7 +66,7 @@ const Logger = {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ GET AUTH HEADERS - WITH ACCESS TOKEN
+// GET AUTH HEADERS - WITH ACCESS TOKEN
 // ═══════════════════════════════════════════════════════════════
 const getAuthHeaders = async () => {
   try {
@@ -97,7 +97,7 @@ const getAuthHeaders = async () => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ FETCH WITH TIMEOUT AND AUTH
+// FETCH WITH TIMEOUT AND AUTH
 // ═══════════════════════════════════════════════════════════════
 const fetchWithTimeout = (url, options = {}, timeout = 15000) => {
   const controller = new AbortController();
@@ -108,7 +108,7 @@ const fetchWithTimeout = (url, options = {}, timeout = 15000) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ AUTHENTICATED FETCH - WITH AUTO TOKEN REFRESH
+// AUTHENTICATED FETCH - WITH AUTO TOKEN REFRESH
 // ═══════════════════════════════════════════════════════════════
 const authenticatedFetch = async (url, options = {}, timeout = API_CONFIG.timeout) => {
   try {
@@ -128,7 +128,7 @@ const authenticatedFetch = async (url, options = {}, timeout = API_CONFIG.timeou
 
     let response = await fetchWithTimeout(url, finalOptions, timeout);
 
-    // ✅ If 401 Unauthorized, try to refresh token
+    // If 401 Unauthorized, try to refresh token
     if (response.status === 401) {
       Logger.warn('API', '401 Unauthorized - Attempting token refresh...');
       
@@ -182,7 +182,7 @@ const isValidCoordinate = (lat, lng) =>
 const ParkingService = {
   
   // ─────────────────────────────────────────────────────────────
-  // ✅ SEND PARKING EVENT (PARK/LEAVE) - WITH JWT AUTH
+  // SEND PARKING EVENT (PARK/LEAVE) - WITH JWT AUTH
   // ─────────────────────────────────────────────────────────────
   async sendParkingEvent(latitude, longitude, eventType, userId, retryCount = 0) {
     const url = `${API_CONFIG.baseUrl}${API_CONFIG.parkingEventEndpoint}`;
@@ -199,7 +199,7 @@ const ParkingService = {
       );
     }
 
-    // ✅ Validate userId
+    // Validate userId
     if (!userId || typeof userId !== 'string') {
       throw new Error('Valid userId is required');
     }
@@ -219,7 +219,7 @@ const ParkingService = {
     Logger.info('PARKING_API', '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
     try {
-      // ✅ Use authenticated fetch
+      // Use authenticated fetch
       const response = await authenticatedFetch(
         url,
         {
@@ -262,7 +262,7 @@ const ParkingService = {
     } catch (error) {
       Logger.error('PARKING_API', `${eventType} event FAILED for ${userId}`, error);
 
-      // ✅ Don't retry if auth expired
+      // Don't retry if auth expired
       if (error.code === 'AUTH_EXPIRED') {
         throw error;
       }
@@ -288,7 +288,7 @@ const ParkingService = {
   },
 
   // ─────────────────────────────────────────────────────────────
-  // ✅ OCCUPY SPOT - WITH JWT AUTH
+  // OCCUPY SPOT - WITH JWT AUTH
   // ─────────────────────────────────────────────────────────────
   async occupySpot(latitude, longitude, userId) {
     Logger.info('PARKING', '🅿️ ===== OCCUPY SPOT (PARK) =====');
@@ -296,7 +296,7 @@ const ParkingService = {
     Logger.info('PARKING', `Location: ${latitude}, ${longitude}`);
     Logger.info('PARKING', `EventType: "${EVENT_TYPES.PARK}"`);
 
-    // ✅ Validate userId
+    // Validate userId
     if (!userId) {
       throw new Error('userId is required to occupy a spot');
     }
@@ -332,7 +332,7 @@ const ParkingService = {
   },
 
   // ─────────────────────────────────────────────────────────────
-  // ✅ VACATE SPOT - WITH JWT AUTH
+  // VACATE SPOT - WITH JWT AUTH
   // ─────────────────────────────────────────────────────────────
   async vacateSpot(latitude, longitude, userId) {
     Logger.info('PARKING', '🚗 ===== VACATE SPOT (LEAVE) =====');
@@ -340,7 +340,7 @@ const ParkingService = {
     Logger.info('PARKING', `Location: ${latitude}, ${longitude}`);
     Logger.info('PARKING', `EventType: "${EVENT_TYPES.LEAVE}"`);
 
-    // ✅ Validate userId
+    // Validate userId
     if (!userId) {
       throw new Error('userId is required to vacate a spot');
     }
@@ -379,7 +379,7 @@ const ParkingService = {
   },
 
   // ─────────────────────────────────────────────────────────────
-  // ✅ FETCH NEARBY SPOTS - WITH JWT AUTH
+  // FETCH NEARBY SPOTS - WITH JWT AUTH
   // ─────────────────────────────────────────────────────────────
   async fetchNearbySpots(
     latitude,
@@ -408,7 +408,7 @@ const ParkingService = {
     Logger.info('NEARBY', '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
     try {
-      // ✅ Use authenticated fetch
+      // Use authenticated fetch
       const response = await authenticatedFetch(
         url,
         {
@@ -558,7 +558,7 @@ const ParkingService = {
 
       Logger.success(
         'NEARBY',
-        `✅ Parsed ${spots.length} spots from ${rawSlots.length} raw`,
+        `Parsed ${spots.length} spots from ${rawSlots.length} raw`,
       );
       Logger.info(
         'NEARBY',
@@ -584,7 +584,7 @@ const ParkingService = {
     } catch (error) {
       Logger.error('NEARBY', 'Fetch nearby FAILED', error);
 
-      // ✅ Don't retry if auth expired
+      // Don't retry if auth expired
       if (error.code === 'AUTH_EXPIRED') {
         throw error;
       }
@@ -719,7 +719,7 @@ const ParkingService = {
   },
 
   // ─────────────────────────────────────────────────────────────
-  // ✅ CHECK AUTH STATUS
+  // CHECK AUTH STATUS
   // ─────────────────────────────────────────────────────────────
   async checkAuthStatus() {
     try {

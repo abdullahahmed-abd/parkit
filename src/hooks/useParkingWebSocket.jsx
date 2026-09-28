@@ -8,7 +8,7 @@ import { AppState } from 'react-native';
 // ─────────────────────────────────────────────
 
 const WS_CONFIG = {
-  // ✅ Use direct server WS in dev (works now), domain WSS in production (needs SSL/SNI fixed)
+  // Use direct server WS in dev (works now), domain WSS in production (needs SSL/SNI fixed)
   url: __DEV__
     ? 'ws://147.93.28.239:8083/parkit-api/ws/parking'
     : 'wss://parkit.sundukpay.com/parkit-api/ws/parking',
@@ -86,7 +86,7 @@ const useParkingWebSocket = ({
     }
 
     if (isMountedRef.current) setStatus(WS_STATUS.DISCONNECTED);
-    console.log('🔌 WebSocket disconnected');
+    console.log('WebSocket disconnected');
   }, [clearTimers]);
 
   const getReconnectDelay = useCallback((attempt) => {
@@ -109,7 +109,7 @@ const useParkingWebSocket = ({
     isConnectingRef.current = true;
 
     console.log(
-      `🔗 Connecting... attempt ${reconnectAttemptRef.current + 1} (${WS_CONFIG.url})`,
+      `Connecting... attempt ${reconnectAttemptRef.current + 1} (${WS_CONFIG.url})`,
     );
 
     if (isMountedRef.current) {
@@ -123,7 +123,7 @@ const useParkingWebSocket = ({
       wsRef.current = ws;
 
       ws.onopen = () => {
-        console.log('✅ WebSocket connected');
+        console.log('WebSocket connected');
         isConnectingRef.current = false;
         reconnectAttemptRef.current = 0;
         setReconnectAttempt(0);
@@ -140,18 +140,18 @@ const useParkingWebSocket = ({
             onSlotFree?.(data);
           }
         } catch (e) {
-          console.log('❌ WS JSON parse failed', e);
+          console.log('WS JSON parse failed', e);
         }
       };
 
       ws.onerror = (event) => {
         // Keep as log to avoid noisy red LogBox; onclose will handle reconnect.
-        console.log('❌ WebSocket error', event?.type || event);
+        console.log('WebSocket error', event?.type || event);
         isConnectingRef.current = false;
       };
 
       ws.onclose = (event) => {
-        console.log('⚠️ WebSocket closed', {
+        console.log('WebSocket closed', {
           code: event?.code,
           reason: event?.reason,
           wasClean: event?.wasClean,
@@ -181,18 +181,18 @@ const useParkingWebSocket = ({
           setReconnectAttempt(reconnectAttemptRef.current);
           setStatus(WS_STATUS.RECONNECTING);
 
-          console.log(`🔄 Reconnecting in ${delay / 1000}s...`);
+          console.log(`Reconnecting in ${delay / 1000}s...`);
 
           reconnectTimerRef.current = setTimeout(() => {
             if (isMountedRef.current && enabledRef.current) connect();
           }, delay);
         } else {
-          console.log('❌ Max reconnect attempts reached');
+          console.log('Max reconnect attempts reached');
           setStatus(WS_STATUS.ERROR);
         }
       };
     } catch (e) {
-      console.log('❌ Failed to create websocket', e);
+      console.log('Failed to create websocket', e);
       isConnectingRef.current = false;
       setStatus(WS_STATUS.ERROR);
     }

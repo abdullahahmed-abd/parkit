@@ -8,17 +8,17 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- ✅ Activity Recognition -->
+    <!-- Activity Recognition -->
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
 
-    <!-- ✅ Foreground service -->
+    <!-- Foreground service -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <!-- ═══ Bluetooth foreground service type ═══ -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 
-    <!-- ✅ Restart after reboot -->
+    <!-- Restart after reboot -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- 📇 Contacts -->
@@ -77,7 +77,7 @@
         android:usesCleartextTraffic="true"
         android:networkSecurityConfig="@xml/network_security_config">
 
-        <!-- ✅ Foreground service for activity recognition updates -->
+        <!-- Foreground service for activity recognition updates -->
         <service
             android:name=".ActivityRecognitionService"
             android:exported="false"
@@ -90,12 +90,12 @@
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
 
-        <!-- ✅ Receiver that gets activity updates -->
+        <!-- Receiver that gets activity updates -->
         <receiver
             android:name=".ActivityRecognitionReceiver"
             android:exported="false" />
 
-        <!-- ✅ Boot receiver to restart service after reboot/app update -->
+        <!-- Boot receiver to restart service after reboot/app update -->
         <receiver
             android:name=".BootReceiver"
             android:enabled="true"
@@ -119,7 +119,7 @@
             <!-- 🅿️ PARKIT DEEP LINKS - NEW ADDITION -->
             <!-- ═══════════════════════════════════════════════════════ -->
             
-            <!-- ✅ ParkIt Login Success Deep Link -->
+            <!-- ParkIt Login Success Deep Link -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -127,7 +127,7 @@
                 <data android:scheme="parkit" android:host="login-success" />
             </intent-filter>
 
-            <!-- ✅ ParkIt OAuth Redirect -->
+            <!-- ParkIt OAuth Redirect -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -135,7 +135,7 @@
                 <data android:scheme="parkit" android:host="oauth2redirect" />
             </intent-filter>
 
-            <!-- ✅ ParkIt Other Deep Links (Optional - Future Use) -->
+            <!-- ParkIt Other Deep Links (Optional - Future Use) -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
