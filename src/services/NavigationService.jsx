@@ -16,7 +16,7 @@ import {
 // CONFIG
 // ═══════════════════════════════════════════════════════════════
 export const API_BASE_URL =
-  'https://parkit.sundukpay.com';
+  'https://vaguely-kindly-improper.ngrok-free.dev';
 
 export const APP_CONFIG = {
   APP_NAME: 'ParkIt',
