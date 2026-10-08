@@ -41,10 +41,10 @@ import { scale, moderateScale, verticalScale } from 'react-native-size-matters';
 import ParkingService from '../services/ParkingService';
 import AppContext from '../context/AppContext';
 
-// WebSocket Hook & Components
-import useParkingWebSocket, { WS_STATUS } from '../hooks/useParkingWebSocket';
-import SlotFreeNotification from '../components/SlotFreeNotification';
-import WsStatusDot from '../components/WsStatusDot';
+// WebSocket Hook & Components (temporarily commented out)
+// import useParkingWebSocket, { WS_STATUS } from '../hooks/useParkingWebSocket';
+// import SlotFreeNotification from '../components/SlotFreeNotification';
+// import WsStatusDot from '../components/WsStatusDot';
 
 // Bottom bar
 import BottomNavBar from './BottomNavBar';
@@ -1008,8 +1008,8 @@ function ParkingMapScreenInner({ navigation, route }) {
 
   const [showSpotsSheet, setShowSpotsSheet] = useState(false);
 
-  // ── WebSocket notification state ───────────────────────────
-  const [slotFreeNotif, setSlotFreeNotif] = useState(null);
+  // ── WebSocket notification state (temporarily commented out) ──
+  // const [slotFreeNotif, setSlotFreeNotif] = useState(null);
 
   // ── Keep refs synced ──────────────────────────────────────────
   useEffect(() => {
@@ -2077,7 +2077,8 @@ function ParkingMapScreenInner({ navigation, route }) {
     setVoiceEnabled(enabled);
   }, []);
 
-  // ── WebSocket callbacks ─────────────────────────────────────
+  // ── WebSocket callbacks (temporarily commented out) ─────────
+  /*
   const handleSlotFree = useCallback(
     (wsMessage) => {
       // wsMessage = { type, latitude, longitude, message }
@@ -2155,6 +2156,7 @@ function ParkingMapScreenInner({ navigation, route }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
+  */
 
   // ── Init ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -2367,6 +2369,7 @@ function ParkingMapScreenInner({ navigation, route }) {
     [userLoc, fitBounds, startNavigation, handleAuthError],
   );
 
+  /*
   // Update navigateToFreeSlot now that fetchAndShowRoute is defined
   const navigateToFreeSlotFinal = useCallback(
     (slotInfo) => {
@@ -2377,6 +2380,7 @@ function ParkingMapScreenInner({ navigation, route }) {
     },
     [fetchAndShowRoute],
   );
+  */
 
   // ── Actions ───────────────────────────────────────────────────
   const refreshNearbySpots = useCallback(async () => {
@@ -2561,7 +2565,7 @@ function ParkingMapScreenInner({ navigation, route }) {
         `Off-route: ${offRouteDistance.toFixed(0)}m`,
         `Cache: ${stats.cache.hitRate}`,
         `Voice: ${stats.voice.enabled ? 'ON' : 'OFF'}`,
-        `WS: ${wsStatus}`,
+        // `WS: ${wsStatus}`,
       ].join('\n'),
     );
   }, [
@@ -2569,7 +2573,7 @@ function ParkingMapScreenInner({ navigation, route }) {
     locationSource,
     routeCoordinates,
     offRouteDistance,
-    wsStatus,
+    // wsStatus,
   ]);
 
   const runSearch = useCallback(async () => {
@@ -2955,8 +2959,8 @@ function ParkingMapScreenInner({ navigation, route }) {
           </View>
         )}
 
-        {/* ── WebSocket status dot ───────────────────────────── */}
-        {!isNavigating && (
+        {/* ── WebSocket status dot (temporarily commented out) ── */}
+        {/* {!isNavigating && (
           <View
             style={[
               styles.wsStatusWrap,
@@ -2972,10 +2976,10 @@ function ParkingMapScreenInner({ navigation, route }) {
               }
             />
           </View>
-        )}
+        )} */}
 
-        {/* ── Slot Free Notification Banner ─────────────────── */}
-        <SlotFreeNotification
+        {/* ── Slot Free Notification Banner (temporarily commented out) ── */}
+        {/* <SlotFreeNotification
           visible={!!slotFreeNotif}
           message={slotFreeNotif?.message}
           latitude={slotFreeNotif?.latitude}
@@ -2988,7 +2992,7 @@ function ParkingMapScreenInner({ navigation, route }) {
               ? insets.top + vs(140)
               : insets.top + vs(100)
           }
-        />
+        /> */}
 
         {/* ── Top UI (not navigating) ───────────────────────────── */}
         {!isNavigating && (

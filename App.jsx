@@ -17,9 +17,9 @@ import Login from './src/screens/Login';
 import ParkingMapScreen from './src/screens/ParkingMapScreen';
 import BluetoothDemoScreen from './src/screens/BluetoothDemoScreen';
 import BottomNavBar from './src/screens/BottomNavBar'
-import SlotFreeNotification from './src/components/SlotFreeNotification'
-import WsStatusDot from "./src/components/WsStatusDot"
-import useParkingWebSocket from "./src/hooks/useParkingWebSocket"
+// import SlotFreeNotification from './src/components/SlotFreeNotification'
+// import WsStatusDot from "./src/components/WsStatusDot"
+// import useParkingWebSocket from "./src/hooks/useParkingWebSocket"
 
 
 const Stack = createNativeStackNavigator();
@@ -213,7 +213,7 @@ const AppNavigator = () => {
               headerShown: false,
             }}
           />
-           <Stack.Screen 
+          {/* <Stack.Screen 
             name="SlotFreeNotification" 
             component={SlotFreeNotification}
             options={{ 
@@ -233,7 +233,7 @@ const AppNavigator = () => {
             options={{ 
               headerShown: false,
             }}
-          />
+          /> */}
 
          
         </Stack.Navigator>

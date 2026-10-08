@@ -1,18 +1,24 @@
-import { w3cwebsocket as W3CWebSocket } from "websocket";
+// src/utils/groupSocket.js
+// ═══════════════════════════════════════════════════════════════
+// WEBSOCKET CODE CURRENTLY DISABLED (BACKEND UNDER MAINTENANCE)
+// ═══════════════════════════════════════════════════════════════
 
-let socket = null;
-let potIdGlobal = null;
-let myUserIdGlobal = null;
-let messageCallback = null;
+// import { w3cwebsocket as W3CWebSocket } from "websocket";
+
+// let socket = null;
+// let potIdGlobal = null;
+// let myUserIdGlobal = null;
+// let messageCallback = null;
 
 export const connectGroupWebSocket = (
-  onMessageReceived,
-  myUserId,
-  backendUrl,
-  onConnected,
-  onDisconnected,
-  globalPotId
+  // onMessageReceived,
+  // myUserId,
+  // backendUrl,
+  // onConnected,
+  // onDisconnected,
+  // globalPotId
 ) => {
+  /*
   potIdGlobal = globalPotId;
   myUserIdGlobal = myUserId;
   messageCallback = onMessageReceived;
@@ -32,7 +38,7 @@ export const connectGroupWebSocket = (
         ? new TextDecoder("utf-8").decode(msg.data)
         : msg.data;
 
-  console.log("WS raw messageeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee:", data);
+    console.log("WS raw message:", data);
 
     if (data.startsWith("CONNECTED")) {
       const subscribeFrame =
@@ -51,31 +57,34 @@ export const connectGroupWebSocket = (
       .replace(/\u0000/g, "")
       .trim();
 
-try {
-  const parsed = JSON.parse(body);
-  const { dataType, data } = parsed;
+    try {
+      const parsed = JSON.parse(body);
+      const { dataType, data } = parsed;
 
-  if (dataType === "CHAT_MESSAGE") {
-    if (data?.globalPotId !== potIdGlobal) return;
-    messageCallback && messageCallback(parsed);
-    return;
-  }
+      if (dataType === "CHAT_MESSAGE") {
+        if (data?.globalPotId !== potIdGlobal) return;
+        messageCallback && messageCallback(parsed);
+        return;
+      }
 
-  if (dataType === "TRANSACTION_MESSAGE") {
-    if (data?.toGlobalPotId !== potIdGlobal) return;
-    messageCallback && messageCallback(parsed);
-    return;
-  }
-} catch (e) {
-  console.error("Group WS parse error:", e);
-}
+      if (dataType === "TRANSACTION_MESSAGE") {
+        if (data?.toGlobalPotId !== potIdGlobal) return;
+        messageCallback && messageCallback(parsed);
+        return;
+      }
+    } catch (e) {
+      console.error("Group WS parse error:", e);
+    }
   };
 
   socket.onerror = (e) => console.error("Group WS error:", e);
   socket.onclose = () => onDisconnected && onDisconnected();
+  */
 };
 
-export const sendGroupMessageWS = (payload) => {
+// WebSocket payload sending commented out
+export const sendGroupMessageWS = (/* payload */) => {
+  /*
   if (!socket || socket.readyState !== 1) return;
 
   const frame =
@@ -85,9 +94,12 @@ export const sendGroupMessageWS = (payload) => {
     `\0`;
 
   socket.send(new TextEncoder().encode(frame));
+  */
 };
 
 export const disconnectGroupWebSocket = () => {
+  /*
   if (socket) socket.close();
   socket = null;
+  */
 };
