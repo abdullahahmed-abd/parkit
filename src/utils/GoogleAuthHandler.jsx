@@ -5,7 +5,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { jwtDecode } from 'jwt-decode';
 
 // Your Backend URL
-const BACKEND_URL = 'https://vaguely-kindly-improper.ngrok-free.dev';
+const BACKEND_URL = 'https://postfoetal-nonancestrally-viki.ngrok-free.dev';
 const GOOGLE_AUTH_ENDPOINT = `${BACKEND_URL}/parkit-api/google`;
 const REFRESH_TOKEN_ENDPOINT = `${BACKEND_URL}/parkit-api/refresh`;
 const DEEP_LINK_SCHEME = 'parkit://login-success';

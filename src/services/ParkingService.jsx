@@ -15,7 +15,7 @@ import {
 // ═══════════════════════════════════════════════════════════════
 // CONFIGURATION - UPDATE YOUR BACKEND URL HERE
 // ═══════════════════════════════════════════════════════════════
-const API_BASE_URL = 'https://vaguely-kindly-improper.ngrok-free.dev';
+const API_BASE_URL = 'https://postfoetal-nonancestrally-viki.ngrok-free.dev';
 
 const API_CONFIG = {
   baseUrl: API_BASE_URL,

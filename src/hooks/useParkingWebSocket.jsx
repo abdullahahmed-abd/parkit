@@ -1,5 +1,9 @@
 // src/hooks/useParkingWebSocket.js
+// ═══════════════════════════════════════════════════════════════
+// WEBSOCKET CODE CURRENTLY DISABLED (BACKEND UNDER MAINTENANCE)
+// ═══════════════════════════════════════════════════════════════
 
+/*
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { AppState } from 'react-native';
 
@@ -22,6 +26,7 @@ const WS_CONFIG = {
     SLOT_FREE: 'SLOT_FREE',
   },
 };
+*/
 
 // ─────────────────────────────────────────────
 // WEBSOCKET STATES
@@ -36,10 +41,11 @@ export const WS_STATUS = {
 };
 
 // ─────────────────────────────────────────────
-// HOOK
+// HOOK (DISABLED SAFE FALLBACK)
 // ─────────────────────────────────────────────
 
-const useParkingWebSocket = ({
+/*
+const useParkingWebSocketOriginal = ({
   onSlotFree,
   onConnected,
   onDisconnected,
@@ -258,6 +264,20 @@ const useParkingWebSocket = ({
     disconnect,
     isConnected: status === WS_STATUS.CONNECTED,
     isReconnecting: status === WS_STATUS.RECONNECTING,
+  };
+};
+*/
+
+// Safe no-op hook while backend WebSocket is under maintenance
+const useParkingWebSocket = () => {
+  return {
+    status: WS_STATUS.DISCONNECTED,
+    lastMessage: null,
+    reconnectAttempt: 0,
+    reconnect: () => {},
+    disconnect: () => {},
+    isConnected: false,
+    isReconnecting: false,
   };
 };
 
