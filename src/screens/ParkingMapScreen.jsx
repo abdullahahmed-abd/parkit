@@ -30,8 +30,12 @@ import {
   AppState,
   PermissionsAndroid,
   StatusBar,
+  KeyboardAvoidingView,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from 'react-native-safe-area-context';
 import MapLibreGL from '@maplibre/maplibre-react-native';
 import Geolocation from '@react-native-community/geolocation';
 import LinearGradient from 'react-native-linear-gradient';
@@ -87,10 +91,10 @@ import {
 
 MapLibreGL.setAccessToken(null);
 
-const s = (v) => scale(v);
-const ms = (v) => moderateScale(v, 0.3);
-const vs = (v) => verticalScale(v);
-const rf = (v) => RFValue(v);
+const s = v => scale(v);
+const ms = v => moderateScale(v, 0.3);
+const vs = v => verticalScale(v);
+const rf = v => RFValue(v);
 
 const COLORS = {
   primary: '#E53935',
@@ -126,7 +130,7 @@ const ParkingSpotsLayer = React.memo(({ spots, isHidden, onSpotPress }) => {
     if (!spots || spots.length === 0 || isHidden) return EMPTY_GEOJSON;
     return {
       type: 'FeatureCollection',
-      features: spots.map((spot) => ({
+      features: spots.map(spot => ({
         type: 'Feature',
         id: String(spot.id),
         geometry: {
@@ -148,11 +152,11 @@ const ParkingSpotsLayer = React.memo(({ spots, isHidden, onSpotPress }) => {
   }, [spots, isHidden]);
 
   const handlePress = useCallback(
-    (e) => {
+    e => {
       if (!e?.features?.length) return;
       const f = e.features[0];
       const spotId = f.properties?.id || f.id;
-      const spot = spots.find((sp) => String(sp.id) === String(spotId));
+      const spot = spots.find(sp => String(sp.id) === String(spotId));
       if (spot) onSpotPress?.(spot);
     },
     [spots, onSpotPress],
@@ -162,7 +166,8 @@ const ParkingSpotsLayer = React.memo(({ spots, isHidden, onSpotPress }) => {
     <MapLibreGL.ShapeSource
       id="parking-spots-source"
       shape={spotsGeoJson}
-      onPress={handlePress}>
+      onPress={handlePress}
+    >
       <MapLibreGL.CircleLayer
         id="parking-spots-border"
         style={{
@@ -197,7 +202,8 @@ const ParkingSpotsLayer = React.memo(({ spots, isHidden, onSpotPress }) => {
 const DestinationLayer = React.memo(({ coordinate }) => {
   const geo = useMemo(() => {
     if (!coordinate?.latitude || !coordinate?.longitude) return EMPTY_GEOJSON;
-    if (!validLL(coordinate.latitude, coordinate.longitude)) return EMPTY_GEOJSON;
+    if (!validLL(coordinate.latitude, coordinate.longitude))
+      return EMPTY_GEOJSON;
     return {
       type: 'FeatureCollection',
       features: [
@@ -256,7 +262,8 @@ const DestinationLayer = React.memo(({ coordinate }) => {
 const SearchMarkerLayer = React.memo(({ coordinate, isVisible }) => {
   const geo = useMemo(() => {
     if (!coordinate?.latitude || !coordinate?.longitude) return EMPTY_GEOJSON;
-    if (!validLL(coordinate.latitude, coordinate.longitude)) return EMPTY_GEOJSON;
+    if (!validLL(coordinate.latitude, coordinate.longitude))
+      return EMPTY_GEOJSON;
     return {
       type: 'FeatureCollection',
       features: [
@@ -399,7 +406,8 @@ class MapErrorBoundary extends React.Component {
           <TouchableOpacity onPress={this.handleRetry} activeOpacity={0.9}>
             <LinearGradient
               colors={[COLORS.primary, COLORS.primaryDark]}
-              style={styles.errorBtn}>
+              style={styles.errorBtn}
+            >
               <Text style={styles.errorBtnText}>Retry</Text>
             </LinearGradient>
           </TouchableOpacity>
@@ -461,7 +469,8 @@ const TopSearchBar = React.memo(
     return (
       <View
         style={[styles.topWrap, { paddingTop: insets.top + vs(8) }]}
-        pointerEvents="box-none">
+        pointerEvents="box-none"
+      >
         <Card style={styles.searchCard}>
           <View style={styles.searchRow}>
             <Text style={styles.searchEmoji}>🔍</Text>
@@ -478,14 +487,16 @@ const TopSearchBar = React.memo(
               <TouchableOpacity
                 onPress={onClear}
                 style={styles.searchClear}
-                hitSlop={10}>
+                hitSlop={10}
+              >
                 <Text style={styles.searchClearText}>✕</Text>
               </TouchableOpacity>
             )}
             <TouchableOpacity
               onPress={onSubmit}
               activeOpacity={0.85}
-              style={styles.searchGoBtn}>
+              style={styles.searchGoBtn}
+            >
               {searching ? (
                 <ActivityIndicator size="small" color={COLORS.white} />
               ) : (
@@ -507,12 +518,14 @@ const ActionChipsRow = React.memo(
     return (
       <View
         style={[styles.chipsWrap, { top: insets.top + vs(62) }]}
-        pointerEvents="box-none">
+        pointerEvents="box-none"
+      >
         <TouchableOpacity
           activeOpacity={0.85}
           onPress={onOccupy}
           disabled={occupyDisabled}
-          style={[styles.chipBtn, occupyDisabled && styles.chipDisabled]}>
+          style={[styles.chipBtn, occupyDisabled && styles.chipDisabled]}
+        >
           <View style={styles.chipInner}>
             {gettingLoc && !mySpot?.isOccupied ? (
               <ActivityIndicator size="small" color={COLORS.primary} />
@@ -529,7 +542,8 @@ const ActionChipsRow = React.memo(
           activeOpacity={0.85}
           onPress={onVacate}
           disabled={vacateDisabled}
-          style={[styles.chipBtn, vacateDisabled && styles.chipDisabled]}>
+          style={[styles.chipBtn, vacateDisabled && styles.chipDisabled]}
+        >
           <View style={styles.chipInner}>
             {gettingLoc && !!mySpot?.isOccupied ? (
               <ActivityIndicator size="small" color={COLORS.primary} />
@@ -551,12 +565,14 @@ const RightMapControls = React.memo(
     return (
       <View
         style={[styles.rightControlsWrap, { top: insets.top + vs(210) }]}
-        pointerEvents="box-none">
+        pointerEvents="box-none"
+      >
         <TouchableOpacity
           activeOpacity={0.85}
           onPress={onLocate}
           onLongPress={onLongLocate}
-          style={styles.ctrlBtn}>
+          style={styles.ctrlBtn}
+        >
           <Card style={styles.ctrlCard}>
             <Text style={styles.ctrlIcon}>⌖</Text>
           </Card>
@@ -565,7 +581,8 @@ const RightMapControls = React.memo(
         <TouchableOpacity
           activeOpacity={0.85}
           onPress={onZoomIn}
-          style={styles.ctrlBtn}>
+          style={styles.ctrlBtn}
+        >
           <Card style={styles.ctrlCard}>
             <Text style={styles.ctrlIcon}>＋</Text>
           </Card>
@@ -574,7 +591,8 @@ const RightMapControls = React.memo(
         <TouchableOpacity
           activeOpacity={0.85}
           onPress={onZoomOut}
-          style={styles.ctrlBtn}>
+          style={styles.ctrlBtn}
+        >
           <Card style={styles.ctrlCard}>
             <Text style={styles.ctrlIcon}>－</Text>
           </Card>
@@ -589,18 +607,18 @@ const FindParkingButton = React.memo(
     if (hidden) return null;
     return (
       <View
-        style={[
-          styles.findBtnWrap,
-          { bottom: vs(86) + (insets?.bottom || 0) },
-        ]}
-        pointerEvents="box-none">
+        style={[styles.findBtnWrap, { bottom: vs(86) + (insets?.bottom || 0) }]}
+        pointerEvents="box-none"
+      >
         <TouchableOpacity
           activeOpacity={0.9}
           onPress={onPress}
-          disabled={disabled}>
+          disabled={disabled}
+        >
           <LinearGradient
             colors={['#E46C67', '#DF5A55']}
-            style={[styles.findBtn, disabled && { opacity: 0.75 }]}>
+            style={[styles.findBtn, disabled && { opacity: 0.75 }]}
+          >
             <Text style={styles.findBtnIcon}>🅿️</Text>
             <Text style={styles.findBtnText}>
               {disabled ? 'Loading…' : 'Find Parking'}
@@ -619,15 +637,11 @@ const EndNavigationButton = React.memo(({ insets, onPress, hidden }) => {
   if (hidden) return null;
   return (
     <View
-      style={[
-        styles.endBtnWrap,
-        { bottom: vs(86) + (insets?.bottom || 0) },
-      ]}
-      pointerEvents="box-none">
+      style={[styles.endBtnWrap, { bottom: vs(86) + (insets?.bottom || 0) }]}
+      pointerEvents="box-none"
+    >
       <TouchableOpacity activeOpacity={0.9} onPress={onPress}>
-        <LinearGradient
-          colors={['#F44336', '#D32F2F']}
-          style={styles.endBtn}>
+        <LinearGradient colors={['#F44336', '#D32F2F']} style={styles.endBtn}>
           <Text style={styles.endBtnIcon}>✕</Text>
           <Text style={styles.endBtnText}>End Navigation</Text>
         </LinearGradient>
@@ -642,7 +656,7 @@ const SpotsSheet = React.memo(
 
     const data = useMemo(() => {
       return (spots || [])
-        .filter((sp) => !sp.isMySpot)
+        .filter(sp => !sp.isMySpot)
         .sort((a, b) => {
           const avA = a.isOccupied ? 1 : 0;
           const avB = b.isOccupied ? 1 : 0;
@@ -661,7 +675,8 @@ const SpotsSheet = React.memo(
         <TouchableOpacity
           activeOpacity={0.85}
           onPress={() => onPressSpot?.(sp)}
-          style={styles.sheetRow}>
+          style={styles.sheetRow}
+        >
           <View style={styles.pIcon}>
             <Text style={styles.pIconText}>P</Text>
           </View>
@@ -691,18 +706,18 @@ const SpotsSheet = React.memo(
         style={[
           styles.sheetWrap,
           {
-            bottom:
-              vs(16) + (insets?.bottom || 0) + ms(64),
+            bottom: vs(16) + (insets?.bottom || 0) + ms(64),
           },
         ]}
-        pointerEvents="box-none">
+        pointerEvents="box-none"
+      >
         <Card style={styles.sheetCard}>
           <View style={styles.sheetHandle} />
 
           <View style={styles.sheetListWrap}>
             <FlatList
               data={data}
-              keyExtractor={(item) => String(item.id)}
+              keyExtractor={item => String(item.id)}
               renderItem={renderItem}
               showsVerticalScrollIndicator={false}
               contentContainerStyle={styles.sheetListContent}
@@ -752,7 +767,8 @@ const NavigationPanel = React.memo(
     return (
       <View
         style={[styles.navPanelWrap, { paddingTop: insets.top + vs(8) }]}
-        pointerEvents="box-none">
+        pointerEvents="box-none"
+      >
         <Card style={styles.navPanel}>
           {isRerouting && (
             <View style={styles.navBannerWarn}>
@@ -765,9 +781,7 @@ const NavigationPanel = React.memo(
 
           {isOffRoute && !isRerouting && (
             <View style={styles.navBannerOff}>
-              <Text style={styles.navBannerOffText}>
-                ⚠️ You are off route
-              </Text>
+              <Text style={styles.navBannerOffText}>⚠️ You are off route</Text>
             </View>
           )}
 
@@ -784,7 +798,8 @@ const NavigationPanel = React.memo(
             <TouchableOpacity
               onPress={onClose}
               style={styles.navCloseBtn}
-              hitSlop={10}>
+              hitSlop={10}
+            >
               <Text style={styles.navCloseText}>✕</Text>
             </TouchableOpacity>
 
@@ -805,7 +820,8 @@ const NavigationPanel = React.memo(
                   styles.navSmBtn,
                   !voiceEnabled && styles.navSmBtnInactive,
                 ]}
-                hitSlop={10}>
+                hitSlop={10}
+              >
                 <Text style={styles.navSmBtnText}>
                   {voiceEnabled ? '🔊' : '🔇'}
                 </Text>
@@ -817,7 +833,8 @@ const NavigationPanel = React.memo(
                   styles.navSmBtn,
                   isRecentering && styles.navSmBtnActive,
                 ]}
-                hitSlop={10}>
+                hitSlop={10}
+              >
                 <Text style={styles.navSmBtnText}>🎯</Text>
               </TouchableOpacity>
             </View>
@@ -865,20 +882,20 @@ const NavigationStepItem = React.memo(
           styles.stepItem,
           isCurrent && styles.stepItemCurrent,
           isPast && styles.stepItemPast,
-        ]}>
+        ]}
+      >
         <View style={styles.stepLeft}>
           <View
             style={[
               styles.stepIcon,
               isCurrent && styles.stepIconCurrent,
               isPast && styles.stepIconPast,
-            ]}>
+            ]}
+          >
             <Text style={styles.stepIconText}>{step.icon || '➡️'}</Text>
           </View>
           {index < totalSteps - 1 && (
-            <View
-              style={[styles.stepLine, isPast && styles.stepLinePast]}
-            />
+            <View style={[styles.stepLine, isPast && styles.stepLinePast]} />
           )}
         </View>
 
@@ -894,7 +911,8 @@ const NavigationStepItem = React.memo(
 
           <Text
             style={[styles.stepInstr, isPast && styles.stepTxtPast]}
-            numberOfLines={2}>
+            numberOfLines={2}
+          >
             {step.instruction}
           </Text>
 
@@ -1008,6 +1026,10 @@ function ParkingMapScreenInner({ navigation, route }) {
 
   const [showSpotsSheet, setShowSpotsSheet] = useState(false);
 
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [reportText, setReportText] = useState('');
+  const [reportSubmitting, setReportSubmitting] = useState(false);
+
   // ── WebSocket notification state (temporarily commented out) ──
   // const [slotFreeNotif, setSlotFreeNotif] = useState(null);
 
@@ -1022,7 +1044,7 @@ function ParkingMapScreenInner({ navigation, route }) {
 
   // ── Auth error handler ────────────────────────────────────────
   const handleAuthError = useCallback(
-    async (error) => {
+    async error => {
       if (
         error?.code === 'AUTH_EXPIRED' ||
         error?.message?.includes('Session expired')
@@ -1100,11 +1122,11 @@ function ParkingMapScreenInner({ navigation, route }) {
       const position = await new Promise((resolve, reject) => {
         const t = setTimeout(() => reject(new Error('Quick timeout')), 3000);
         Geolocation.getCurrentPosition(
-          (pos) => {
+          pos => {
             clearTimeout(t);
             resolve(pos);
           },
-          (err) => {
+          err => {
             clearTimeout(t);
             reject(err);
           },
@@ -1146,11 +1168,11 @@ function ParkingMapScreenInner({ navigation, route }) {
         );
 
         Geolocation.getCurrentPosition(
-          (pos) => {
+          pos => {
             clearTimeout(timeoutId);
             resolve(pos);
           },
-          (err) => {
+          err => {
             clearTimeout(timeoutId);
             reject(err);
           },
@@ -1193,11 +1215,11 @@ function ParkingMapScreenInner({ navigation, route }) {
         const position = await new Promise((resolve, reject) => {
           const t = setTimeout(() => reject(new Error('GPS Timeout')), 10000);
           Geolocation.getCurrentPosition(
-            (pos) => {
+            pos => {
               clearTimeout(t);
               resolve(pos);
             },
-            (err) => {
+            err => {
               clearTimeout(t);
               reject(err);
             },
@@ -1226,11 +1248,11 @@ function ParkingMapScreenInner({ navigation, route }) {
             8000,
           );
           Geolocation.getCurrentPosition(
-            (pos) => {
+            pos => {
               clearTimeout(t);
               resolve(pos);
             },
-            (err) => {
+            err => {
               clearTimeout(t);
               reject(err);
             },
@@ -1257,74 +1279,64 @@ function ParkingMapScreenInner({ navigation, route }) {
   }, []);
 
   // ── Marker update ─────────────────────────────────────────────
-  const updateMarkerPosition = useCallback(
-    (lat, lng, forceRaw = false) => {
-      if (!isMountedRef.current || !validLL(lat, lng)) return;
+  const updateMarkerPosition = useCallback((lat, lng, forceRaw = false) => {
+    if (!isMountedRef.current || !validLL(lat, lng)) return;
 
-      const now = Date.now();
-      if (
-        now - lastMarkerUpdateRef.current <
-        (isNavigatingRef.current ? 150 : 100)
-      )
+    const now = Date.now();
+    if (
+      now - lastMarkerUpdateRef.current <
+      (isNavigatingRef.current ? 150 : 100)
+    )
+      return;
+    lastMarkerUpdateRef.current = now;
+
+    if (isNavigatingRef.current && routeCoordinatesRef.current && !forceRaw) {
+      const snapped = snapToRoute(
+        { latitude: lat, longitude: lng },
+        routeCoordinatesRef.current,
+        NAV_CONFIG.SNAP_TO_ROUTE_THRESHOLD,
+      );
+      if (snapped?.coordinate) {
+        snappedUserCoordRef.current = snapped.coordinate;
+        setSnappedUserCoord(snapped.coordinate);
+        setUserMarkerCoord(snapped.coordinate);
         return;
-      lastMarkerUpdateRef.current = now;
-
-      if (
-        isNavigatingRef.current &&
-        routeCoordinatesRef.current &&
-        !forceRaw
-      ) {
-        const snapped = snapToRoute(
-          { latitude: lat, longitude: lng },
-          routeCoordinatesRef.current,
-          NAV_CONFIG.SNAP_TO_ROUTE_THRESHOLD,
-        );
-        if (snapped?.coordinate) {
-          snappedUserCoordRef.current = snapped.coordinate;
-          setSnappedUserCoord(snapped.coordinate);
-          setUserMarkerCoord(snapped.coordinate);
-          return;
-        }
       }
+    }
 
-      setUserMarkerCoord([lng, lat]);
-      snappedUserCoordRef.current = null;
-      setSnappedUserCoord(null);
-    },
-    [],
-  );
+    setUserMarkerCoord([lng, lat]);
+    snappedUserCoordRef.current = null;
+    setSnappedUserCoord(null);
+  }, []);
 
   // ── Camera helpers ────────────────────────────────────────────
-  const flyTo = useCallback(
-    (lat, lng, zoom = 16, force = false) => {
-      if (!cameraRef.current || !validLL(lat, lng)) return;
+  const flyTo = useCallback((lat, lng, zoom = 16, force = false) => {
+    if (!cameraRef.current || !validLL(lat, lng)) return;
 
-      const now = Date.now();
-      if (!force && now - lastCameraUpdateRef.current < 500) return;
+    const now = Date.now();
+    if (!force && now - lastCameraUpdateRef.current < 500) return;
 
-      const safeZoom = Math.min(Math.max(zoom, 5), 18);
-      try {
-        cameraRef.current.setCamera({
-          centerCoordinate: [lng, lat],
-          zoomLevel: safeZoom,
-          animationDuration: 650,
-          animationMode: 'flyTo',
-        });
-        lastCameraUpdateRef.current = Date.now();
-        setZoomLevel(safeZoom);
-      } catch {}
-    },
-    [],
-  );
+    const safeZoom = Math.min(Math.max(zoom, 5), 18);
+    try {
+      cameraRef.current.setCamera({
+        centerCoordinate: [lng, lat],
+        zoomLevel: safeZoom,
+        animationDuration: 650,
+        animationMode: 'flyTo',
+      });
+      lastCameraUpdateRef.current = Date.now();
+      setZoomLevel(safeZoom);
+    } catch {}
+  }, []);
 
   const fitBounds = useCallback(
     (coords, padding = [ms(120), ms(40), ms(320), ms(40)]) => {
       if (!coords || coords.length < 2 || !cameraRef.current) return;
       try {
-        const validCoords = coords.filter((c) => c && c.length >= 2);
+        const validCoords = coords.filter(c => c && c.length >= 2);
         if (validCoords.length < 2) return;
-        const lngs = validCoords.map((c) => c[0]);
-        const lats = validCoords.map((c) => c[1]);
+        const lngs = validCoords.map(c => c[0]);
+        const lats = validCoords.map(c => c[1]);
         cameraRef.current.fitBounds(
           [Math.max(...lngs), Math.max(...lats)],
           [Math.min(...lngs), Math.min(...lats)],
@@ -1368,7 +1380,7 @@ function ParkingMapScreenInner({ navigation, route }) {
 
     try {
       passiveWatchId.current = Geolocation.watchPosition(
-        (position) => {
+        position => {
           if (!isMountedRef.current || isNavigatingRef.current) return;
 
           const { latitude, longitude, accuracy, heading, speed } =
@@ -1454,7 +1466,7 @@ function ParkingMapScreenInner({ navigation, route }) {
 
         if (savedSpot?.isOccupied) {
           combined = combined.filter(
-            (sp) =>
+            sp =>
               calcDistance(
                 sp.latitude,
                 sp.longitude,
@@ -1466,7 +1478,7 @@ function ParkingMapScreenInner({ navigation, route }) {
         }
 
         combined = combined
-          .map((sp) => ({
+          .map(sp => ({
             ...sp,
             distance: calcDistance(
               location.latitude,
@@ -1539,7 +1551,14 @@ function ParkingMapScreenInner({ navigation, route }) {
     } finally {
       setIsRefreshingLocation(false);
     }
-  }, [getAccurateLocation, userLoc, updateMarkerPosition, flyTo, loadSpots, spotsLoading]);
+  }, [
+    getAccurateLocation,
+    userLoc,
+    updateMarkerPosition,
+    flyTo,
+    loadSpots,
+    spotsLoading,
+  ]);
 
   // ── Reset nav state ───────────────────────────────────────────
   const resetNavigationState = useCallback(() => {
@@ -1587,34 +1606,35 @@ function ParkingMapScreenInner({ navigation, route }) {
         setNavigationProgress(1);
         setShowSpotsSheet(false);
 
-        Alert.alert(
-          'You Have Arrived!',
-          'You have reached your destination.',
-          [
-            {
-              text: 'OK',
-              onPress: () => {
-                if (!isMountedRef.current) return;
-                cleanupNavigation();
-                resetNavigationState();
-                setTimeout(() => {
-                  if (isMountedRef.current && !isNavigatingRef.current) {
-                    startPassiveTracking();
-                    if (lastLocationRef.current)
-                      loadSpots(lastLocationRef.current, true);
-                  }
-                }, 250);
-              },
+        Alert.alert('You Have Arrived!', 'You have reached your destination.', [
+          {
+            text: 'OK',
+            onPress: () => {
+              if (!isMountedRef.current) return;
+              cleanupNavigation();
+              resetNavigationState();
+              setTimeout(() => {
+                if (isMountedRef.current && !isNavigatingRef.current) {
+                  startPassiveTracking();
+                  if (lastLocationRef.current)
+                    loadSpots(lastLocationRef.current, true);
+                }
+              }, 250);
             },
-          ],
-        );
+          },
+        ]);
       }
     } catch (e) {
       Logger.error('NAV', 'Arrival error', e);
     } finally {
       isStoppingRef.current = false;
     }
-  }, [clearNavigationWatch, resetNavigationState, startPassiveTracking, loadSpots]);
+  }, [
+    clearNavigationWatch,
+    resetNavigationState,
+    startPassiveTracking,
+    loadSpots,
+  ]);
 
   // ── Stop nav ──────────────────────────────────────────────────
   const stopNavigation = useCallback(async () => {
@@ -1638,8 +1658,7 @@ function ParkingMapScreenInner({ navigation, route }) {
       setTimeout(() => {
         if (isMountedRef.current && !isNavigatingRef.current) {
           startPassiveTracking();
-          if (lastLocationRef.current)
-            loadSpots(lastLocationRef.current, true);
+          if (lastLocationRef.current) loadSpots(lastLocationRef.current, true);
         }
       }, 250);
     } catch (e) {
@@ -1647,11 +1666,16 @@ function ParkingMapScreenInner({ navigation, route }) {
     } finally {
       isStoppingRef.current = false;
     }
-  }, [clearNavigationWatch, resetNavigationState, startPassiveTracking, loadSpots]);
+  }, [
+    clearNavigationWatch,
+    resetNavigationState,
+    startPassiveTracking,
+    loadSpots,
+  ]);
 
   // ── Reroute ───────────────────────────────────────────────────
   const performReroute = useCallback(
-    async (currentLoc) => {
+    async currentLoc => {
       const dest = destinationRef.current;
 
       if (!dest || !validLL(currentLoc.latitude, currentLoc.longitude)) return;
@@ -1724,10 +1748,7 @@ function ParkingMapScreenInner({ navigation, route }) {
 
         if (isAuthErr) return;
 
-        if (
-          rerouteManager.rerouteCount >= 3 &&
-          isMountedRef.current
-        ) {
+        if (rerouteManager.rerouteCount >= 3 && isMountedRef.current) {
           Alert.alert(
             'Reroute Failed',
             `Unable to recalculate after ${rerouteManager.rerouteCount} attempts.`,
@@ -1748,7 +1769,7 @@ function ParkingMapScreenInner({ navigation, route }) {
 
   // ── Update route visual ───────────────────────────────────────
   const updateRouteVisual = useCallback(
-    (currentLoc) => {
+    currentLoc => {
       if (!isMountedRef.current || !currentLoc) return;
       if (isStoppingRef.current || !isNavigatingRef.current) return;
 
@@ -1759,8 +1780,7 @@ function ParkingMapScreenInner({ navigation, route }) {
       try {
         if (routeLineManager.hasArrived(currentLoc)) {
           setTimeout(() => {
-            if (isMountedRef.current && !isStoppingRef.current)
-              handleArrival();
+            if (isMountedRef.current && !isStoppingRef.current) handleArrival();
           }, 100);
           return;
         }
@@ -1817,8 +1837,7 @@ function ParkingMapScreenInner({ navigation, route }) {
 
       try {
         const stepResult = stepTracker.update(currentLoc);
-        if (stepResult.changed)
-          setCurrentStepIndex(stepTracker.currentIndex);
+        if (stepResult.changed) setCurrentStepIndex(stepTracker.currentIndex);
         setDistanceToNextStep(stepResult.distanceToStep);
       } catch {}
     },
@@ -1829,7 +1848,7 @@ function ParkingMapScreenInner({ navigation, route }) {
   const checkLocationEnabled = useCallback(async () => {
     if (Platform.OS !== 'android') return true;
     try {
-      const enabled = await new Promise((resolve) => {
+      const enabled = await new Promise(resolve => {
         Geolocation.getCurrentPosition(
           () => resolve(true),
           () => resolve(false),
@@ -1837,14 +1856,10 @@ function ParkingMapScreenInner({ navigation, route }) {
         );
       });
       if (!enabled) {
-        Alert.alert(
-          'Location Disabled',
-          'Please enable location services.',
-          [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Settings', onPress: () => Linking.openSettings() },
-          ],
-        );
+        Alert.alert('Location Disabled', 'Please enable location services.', [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Settings', onPress: () => Linking.openSettings() },
+        ]);
         return false;
       }
       return true;
@@ -1902,7 +1917,7 @@ function ParkingMapScreenInner({ navigation, route }) {
     const startWatch = (name, config) => {
       try {
         locationWatchId.current = Geolocation.watchPosition(
-          (pos) => {
+          pos => {
             const { latitude, longitude, accuracy, heading, speed } =
               pos.coords;
             processLocation(
@@ -1940,9 +1955,8 @@ function ParkingMapScreenInner({ navigation, route }) {
         return;
 
       Geolocation.getCurrentPosition(
-        (pos) => {
-          const { latitude, longitude, accuracy, heading, speed } =
-            pos.coords;
+        pos => {
+          const { latitude, longitude, accuracy, heading, speed } = pos.coords;
           processLocation(
             latitude,
             longitude,
@@ -1954,7 +1968,7 @@ function ParkingMapScreenInner({ navigation, route }) {
         },
         () => {
           Geolocation.getCurrentPosition(
-            (pos) => {
+            pos => {
               const c = pos.coords;
               processLocation(
                 c.latitude,
@@ -1978,11 +1992,7 @@ function ParkingMapScreenInner({ navigation, route }) {
     };
 
     setTimeout(() => {
-      if (
-        !watchWorking &&
-        isMountedRef.current &&
-        isNavigatingRef.current
-      )
+      if (!watchWorking && isMountedRef.current && isNavigatingRef.current)
         doFallback();
     }, 3000);
 
@@ -2168,10 +2178,7 @@ function ParkingMapScreenInner({ navigation, route }) {
 
         let initialLocation = null;
 
-        if (
-          prefetchedLocation?.latitude &&
-          prefetchedLocation?.longitude
-        ) {
+        if (prefetchedLocation?.latitude && prefetchedLocation?.longitude) {
           initialLocation = prefetchedLocation;
           permissionGrantedRef.current = true;
           setLocationSource(
@@ -2181,7 +2188,7 @@ function ParkingMapScreenInner({ navigation, route }) {
           initialLocation = await getQuickLocation();
 
           getAccurateLocation()
-            .then((accurateLoc) => {
+            .then(accurateLoc => {
               if (!isMountedRef.current || !accurateLoc) return;
 
               const initLoc = lastLocationRef.current;
@@ -2260,25 +2267,19 @@ function ParkingMapScreenInner({ navigation, route }) {
       loadSpots(lastLocationRef.current, true);
     }, NEARBY_CONFIG.AUTO_REFRESH_INTERVAL);
 
-    const appStateSub = AppState.addEventListener(
-      'change',
-      (nextState) => {
-        const wasBackground = appStateRef.current.match(
-          /inactive|background/,
-        );
-        const isNowActive = nextState === 'active';
+    const appStateSub = AppState.addEventListener('change', nextState => {
+      const wasBackground = appStateRef.current.match(/inactive|background/);
+      const isNowActive = nextState === 'active';
 
-        if (wasBackground && isNowActive) {
-          if (isNavigatingRef.current && !isStoppingRef.current)
-            startLocationTracking();
-          else if (!isNavigatingRef.current) startPassiveTracking();
+      if (wasBackground && isNowActive) {
+        if (isNavigatingRef.current && !isStoppingRef.current)
+          startLocationTracking();
+        else if (!isNavigatingRef.current) startPassiveTracking();
 
-          if (lastLocationRef.current)
-            loadSpots(lastLocationRef.current, true);
-        }
-        appStateRef.current = nextState;
-      },
-    );
+        if (lastLocationRef.current) loadSpots(lastLocationRef.current, true);
+      }
+      appStateRef.current = nextState;
+    });
 
     return () => {
       isMountedRef.current = false;
@@ -2387,11 +2388,68 @@ function ParkingMapScreenInner({ navigation, route }) {
     await loadSpots(lastLocationRef.current || userLoc, true);
   }, [loadSpots, userLoc]);
 
-  const handleSpotPress = useCallback((spot) => {
+  const handleSpotPress = useCallback(spot => {
     setShowSpotsSheet(false);
     setSelectedSpot(spot);
     setShowModal(true);
   }, []);
+
+  // Report logic
+
+  const openReport = useCallback(() => {
+    if (!currentUserId) {
+      Alert.alert('Not Logged In', 'Please login to report a spot.');
+      return;
+    }
+    setReportText('');
+    setShowModal(false);
+    setTimeout(() => setShowReportModal(true), 250);
+  }, [currentUserId]);
+
+  const closeReport = useCallback(() => {
+    if (reportSubmitting) return;
+    Keyboard.dismiss();
+    setShowReportModal(false);
+    setReportText('');
+  }, [reportSubmitting]);
+
+  const submitReport = useCallback(async () => {
+    if (!selectedSpot) return;
+
+    const text = reportText.trim();
+    if (text.length < 5) {
+      Alert.alert(
+        'Reason required',
+        'Please type the reason (min 5 characters).',
+      );
+      return;
+    }
+
+    Keyboard.dismiss();
+    setReportSubmitting(true);
+    try {
+      console.log('REPORT slotId:', selectedSpot.id, 'user:', currentUserId);
+
+      await ParkingService.reportSpot({
+        slotId: selectedSpot.id,
+        reportedByUserId: currentUserId,
+        reason: text,
+      });
+
+      setShowReportModal(false);
+      setReportText('');
+      Alert.alert('Thank you', 'Your report has been submitted.');
+
+      if (lastLocationRef.current) loadSpots(lastLocationRef.current, true);
+    } catch (e) {
+      const isAuthErr = await handleAuthError(e);
+      if (!isAuthErr) {
+        Alert.alert('Failed', e.message || 'Could not submit report');
+      }
+    } finally {
+      setReportSubmitting(false);
+    }
+  }, [selectedSpot, reportText, currentUserId, loadSpots, handleAuthError]);
 
   const handleOccupy = useCallback(async () => {
     if (!currentUserId) {
@@ -2407,7 +2465,10 @@ function ParkingMapScreenInner({ navigation, route }) {
     }
 
     const location = await getLoc();
-    if (!location?.latitude || !validLL(location.latitude, location.longitude)) {
+    if (
+      !location?.latitude ||
+      !validLL(location.latitude, location.longitude)
+    ) {
       Alert.alert('Error', 'Could not get location');
       return;
     }
@@ -2429,11 +2490,7 @@ function ParkingMapScreenInner({ navigation, route }) {
               setMySpot(spotData);
               setUserLoc(location);
               lastLocationRef.current = location;
-              updateMarkerPosition(
-                location.latitude,
-                location.longitude,
-                true,
-              );
+              updateMarkerPosition(location.latitude, location.longitude, true);
               await loadSpots(location, true);
               flyTo(location.latitude, location.longitude, 17, true);
               Alert.alert('Success', 'Parking spot saved!');
@@ -2494,23 +2551,13 @@ function ParkingMapScreenInner({ navigation, route }) {
             } catch (e) {
               const isAuthErr = await handleAuthError(e);
               if (!isAuthErr)
-                Alert.alert(
-                  'Failed',
-                  e.message || 'Could not release spot',
-                );
+                Alert.alert('Failed', e.message || 'Could not release spot');
             }
           },
         },
       ],
     );
-  }, [
-    currentUserId,
-    mySpot,
-    loadSpots,
-    userLoc,
-    navigation,
-    handleAuthError,
-  ]);
+  }, [currentUserId, mySpot, loadSpots, userLoc, navigation, handleAuthError]);
 
   const onLocate = useCallback(async () => {
     setShowSpotsSheet(false);
@@ -2528,9 +2575,7 @@ function ParkingMapScreenInner({ navigation, route }) {
     setShowSpotsSheet(next);
 
     if (next) {
-      const available = allSpots.find(
-        (sp) => !sp.isOccupied && !sp.isMySpot,
-      );
+      const available = allSpots.find(sp => !sp.isOccupied && !sp.isMySpot);
       if (!available) {
         Alert.alert('No Spots', 'No spots available nearby');
         setShowSpotsSheet(false);
@@ -2585,7 +2630,9 @@ function ParkingMapScreenInner({ navigation, route }) {
     setSearching(true);
     try {
       const response = await fetchWithTimeout(
-        `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(query)}`,
+        `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(
+          query,
+        )}`,
         {
           headers: {
             'User-Agent': `${APP_CONFIG.APP_NAME}/${APP_CONFIG.VERSION}`,
@@ -2633,7 +2680,7 @@ function ParkingMapScreenInner({ navigation, route }) {
   }, []);
 
   const onStartNavigation = useCallback(
-    (spot) => {
+    spot => {
       setShowModal(false);
       setShowNavigation(false);
       setShowSpotsSheet(false);
@@ -2643,7 +2690,7 @@ function ParkingMapScreenInner({ navigation, route }) {
   );
 
   const onShowSteps = useCallback(
-    (spot) => {
+    spot => {
       setShowModal(false);
       setShowNavigation(true);
       setShowSpotsSheet(false);
@@ -2654,7 +2701,7 @@ function ParkingMapScreenInner({ navigation, route }) {
   );
 
   const onNavigateExternal = useCallback(
-    (spot) => {
+    spot => {
       const location = lastLocationRef.current || userLoc;
       Linking.openURL(
         `https://www.google.com/maps/dir/?api=1&origin=${location.latitude},${location.longitude}&destination=${spot.latitude},${spot.longitude}&travelmode=driving`,
@@ -2674,7 +2721,7 @@ function ParkingMapScreenInner({ navigation, route }) {
 
   // ── Memos ──────────────────────────────────────────────────────
   const availableCount = useMemo(
-    () => allSpots.filter((sp) => !sp.isOccupied && !sp.isMySpot).length,
+    () => allSpots.filter(sp => !sp.isOccupied && !sp.isMySpot).length,
     [allSpots],
   );
 
@@ -2750,7 +2797,7 @@ function ParkingMapScreenInner({ navigation, route }) {
   }, [routeCoordinates, isNavigating]);
 
   // ── Bottom nav ────────────────────────────────────────────────
-  const onTabPress = useCallback((key) => {
+  const onTabPress = useCallback(key => {
     setShowSpotsSheet(false);
     if (key === 'Explore') return;
     if (key === 'Saved')
@@ -2783,15 +2830,14 @@ function ParkingMapScreenInner({ navigation, route }) {
           scrollEnabled={!isNavigating || !followUser}
           zoomEnabled
           onDidFinishRenderingMapFully={() => setTilesLoaded(true)}
-          onTouchStart={handleMapTouchStart}>
+          onTouchStart={handleMapTouchStart}
+        >
           <MapLibreGL.Camera
             ref={cameraRef}
             maxZoomLevel={18}
             minZoomLevel={5}
             followUserLocation={isNavigating && followUser}
-            followUserMode={
-              isNavigating && followUser ? 'course' : 'normal'
-            }
+            followUserMode={isNavigating && followUser ? 'course' : 'normal'}
             followZoomLevel={isNavigating ? NAV_CONFIG.NAVIGATION_ZOOM : 15}
             followPitch={
               isNavigating && followUser ? NAV_CONFIG.NAVIGATION_TILT : 0
@@ -2809,7 +2855,8 @@ function ParkingMapScreenInner({ navigation, route }) {
             ]}
             tileSize={256}
             maxZoomLevel={19}
-            minZoomLevel={1}>
+            minZoomLevel={1}
+          >
             <MapLibreGL.RasterLayer
               id="osmLayer"
               sourceID="osm"
@@ -2827,7 +2874,8 @@ function ParkingMapScreenInner({ navigation, route }) {
                 type: 'LineString',
                 coordinates: routeVisualization.traveledCoords,
               },
-            }}>
+            }}
+          >
             <MapLibreGL.LineLayer
               id="traveled-route"
               style={{
@@ -2849,7 +2897,8 @@ function ParkingMapScreenInner({ navigation, route }) {
                 type: 'LineString',
                 coordinates: routeVisualization.remainingCoords,
               },
-            }}>
+            }}
+          >
             <MapLibreGL.LineLayer
               id="remaining-route-border"
               style={{
@@ -2871,7 +2920,8 @@ function ParkingMapScreenInner({ navigation, route }) {
                 type: 'LineString',
                 coordinates: routeVisualization.remainingCoords,
               },
-            }}>
+            }}
+          >
             <MapLibreGL.LineLayer
               id="remaining-route"
               style={{
@@ -2924,20 +2974,14 @@ function ParkingMapScreenInner({ navigation, route }) {
           <View style={styles.routeOverlay}>
             <Card style={styles.routeOverlayCard}>
               <ActivityIndicator size="large" color={COLORS.primary} />
-              <Text style={styles.routeOverlayText}>
-                Calculating route...
-              </Text>
+              <Text style={styles.routeOverlayText}>Calculating route...</Text>
             </Card>
           </View>
         )}
 
         {/* ── Refreshing location indicator ─────────────────────── */}
         {isRefreshingLocation && (
-          <View
-            style={[
-              styles.statusIndicator,
-              { top: insets.top + vs(80) },
-            ]}>
+          <View style={[styles.statusIndicator, { top: insets.top + vs(80) }]}>
             <ActivityIndicator size="small" color={COLORS.primary} />
             <Text style={styles.statusIndicatorText}>
               📍 Updating your location...
@@ -2947,11 +2991,7 @@ function ParkingMapScreenInner({ navigation, route }) {
 
         {/* ── Finding parking indicator ─────────────────────────── */}
         {spotsLoading && !isRefreshingLocation && (
-          <View
-            style={[
-              styles.statusIndicator,
-              { top: insets.top + vs(80) },
-            ]}>
+          <View style={[styles.statusIndicator, { top: insets.top + vs(80) }]}>
             <ActivityIndicator size="small" color={COLORS.primary} />
             <Text style={styles.statusIndicatorText}>
               🅿️ Finding parking...
@@ -3082,7 +3122,8 @@ function ParkingMapScreenInner({ navigation, route }) {
           visible={showModal}
           transparent
           animationType="slide"
-          onRequestClose={() => setShowModal(false)}>
+          onRequestClose={() => setShowModal(false)}
+        >
           <View style={styles.modalOverlay}>
             <TouchableOpacity
               style={styles.modalBackdrop}
@@ -3098,7 +3139,8 @@ function ParkingMapScreenInner({ navigation, route }) {
                 </Text>
                 <TouchableOpacity
                   onPress={() => setShowModal(false)}
-                  hitSlop={10}>
+                  hitSlop={10}
+                >
                   <Text style={styles.modalClose}>✕</Text>
                 </TouchableOpacity>
               </View>
@@ -3106,7 +3148,8 @@ function ParkingMapScreenInner({ navigation, route }) {
               {selectedSpot && (
                 <ScrollView
                   style={{ maxHeight: vs(460) }}
-                  showsVerticalScrollIndicator={false}>
+                  showsVerticalScrollIndicator={false}
+                >
                   <View style={styles.modalBadgeRow}>
                     <View
                       style={[
@@ -3114,11 +3157,32 @@ function ParkingMapScreenInner({ navigation, route }) {
                         selectedSpot.isOccupied
                           ? styles.badgeRed
                           : styles.badgeGreen,
-                      ]}>
+                      ]}
+                    >
                       <Text style={styles.modalStatusText}>
                         {selectedSpot.isOccupied ? 'Occupied' : 'Available'}
                       </Text>
                     </View>
+
+                    {!selectedSpot.isMySpot && (
+                      <TouchableOpacity
+                        activeOpacity={0.7}
+                        onPress={openReport}
+                        style={styles.reportButton}
+                      >
+                        <Text
+                          style={{
+                            color: '#FFFFFF',
+                            fontSize: 14,
+                            fontWeight: '900',
+                            letterSpacing: 0.4,
+                            textAlign: 'center',
+                          }}
+                        >
+                          Report
+                        </Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
 
                   <View style={styles.modalInfo}>
@@ -3152,10 +3216,12 @@ function ParkingMapScreenInner({ navigation, route }) {
                   <View style={styles.modalActions}>
                     <TouchableOpacity
                       activeOpacity={0.9}
-                      onPress={() => onStartNavigation(selectedSpot)}>
+                      onPress={() => onStartNavigation(selectedSpot)}
+                    >
                       <LinearGradient
                         colors={['#4CAF50', '#2E7D32']}
-                        style={styles.modalPrimaryBtn}>
+                        style={styles.modalPrimaryBtn}
+                      >
                         <Text style={styles.modalPrimaryText}>
                           Start Navigation
                         </Text>
@@ -3164,7 +3230,8 @@ function ParkingMapScreenInner({ navigation, route }) {
 
                     <TouchableOpacity
                       activeOpacity={0.9}
-                      onPress={() => onShowSteps(selectedSpot)}>
+                      onPress={() => onShowSteps(selectedSpot)}
+                    >
                       <View style={styles.modalSecondaryBtn}>
                         <Text style={styles.modalSecondaryText}>
                           View Steps
@@ -3174,20 +3241,18 @@ function ParkingMapScreenInner({ navigation, route }) {
 
                     <TouchableOpacity
                       activeOpacity={0.85}
-                      onPress={() => onNavigateExternal(selectedSpot)}>
-                      <Text style={styles.modalLink}>
-                        Open in Google Maps
-                      </Text>
+                      onPress={() => onNavigateExternal(selectedSpot)}
+                    >
+                      <Text style={styles.modalLink}>Open in Google Maps</Text>
                     </TouchableOpacity>
 
                     <TouchableOpacity
                       activeOpacity={0.85}
                       onPress={refreshNearbySpots}
-                      style={{ marginTop: vs(8) }}>
+                      style={{ marginTop: vs(8) }}
+                    >
                       <Text style={styles.modalLinkMuted}>
-                        {spotsLoading
-                          ? 'Refreshing…'
-                          : 'Refresh nearby spots'}
+                        {spotsLoading ? 'Refreshing…' : 'Refresh nearby spots'}
                       </Text>
                     </TouchableOpacity>
                   </View>
@@ -3197,19 +3262,98 @@ function ParkingMapScreenInner({ navigation, route }) {
           </View>
         </Modal>
 
+        {/* ── Report spot modal ─────────────────────────────────── */}
+        <Modal
+          visible={showReportModal}
+          transparent
+          animationType="slide"
+          onRequestClose={closeReport}
+        >
+          <KeyboardAvoidingView
+            style={{ flex: 1 }}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          >
+            <View style={styles.modalOverlay}>
+              <TouchableOpacity
+                style={styles.modalBackdrop}
+                onPress={closeReport}
+                activeOpacity={1}
+              />
+              <Card style={styles.modalCard}>
+                <View style={styles.modalHandle} />
+
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitle}>Report Parking Spot</Text>
+                  <TouchableOpacity onPress={closeReport} hitSlop={10}>
+                    <Text style={styles.modalClose}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <Text style={styles.reportHint}>
+                  Please tell us what is wrong with this spot
+                </Text>
+
+                <TextInput
+                  value={reportText}
+                  onChangeText={setReportText}
+                  placeholder="Type your reason here..."
+                  placeholderTextColor={COLORS.hint}
+                  multiline
+                  maxLength={300}
+                  autoFocus
+                  style={styles.reportInput}
+                />
+                <Text style={styles.reportCounter}>
+                  {reportText.length}/300
+                </Text>
+
+                <View style={styles.modalActions}>
+                  <TouchableOpacity
+                    activeOpacity={0.9}
+                    onPress={submitReport}
+                    disabled={reportSubmitting || reportText.trim().length < 5}
+                  >
+                    <LinearGradient
+                      colors={['#E53935', '#C62828']}
+                      style={[
+                        styles.modalPrimaryBtn,
+                        (reportSubmitting || reportText.trim().length < 5) && {
+                          opacity: 0.5,
+                        },
+                      ]}
+                    >
+                      {reportSubmitting ? (
+                        <ActivityIndicator size="small" color={COLORS.white} />
+                      ) : (
+                        <Text style={styles.modalPrimaryText}>Send</Text>
+                      )}
+                    </LinearGradient>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity activeOpacity={0.85} onPress={closeReport}>
+                    <Text style={styles.modalLinkMuted}>Cancel</Text>
+                  </TouchableOpacity>
+                </View>
+              </Card>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+
         {/* ── Navigation steps modal ────────────────────────────── */}
         <Modal
           visible={showNavigation}
           transparent
           animationType="slide"
-          onRequestClose={() => setShowNavigation(false)}>
+          onRequestClose={() => setShowNavigation(false)}
+        >
           <SafeAreaView style={styles.stepsOverlay}>
             <Card style={styles.stepsCard}>
               <View style={styles.stepsHeader}>
                 <TouchableOpacity
                   onPress={() => setShowNavigation(false)}
                   style={styles.stepsBack}
-                  hitSlop={10}>
+                  hitSlop={10}
+                >
                   <Text style={styles.stepsBackText}>←</Text>
                 </TouchableOpacity>
                 <Text style={styles.stepsTitle}>Navigation Steps</Text>
@@ -3221,14 +3365,15 @@ function ParkingMapScreenInner({ navigation, route }) {
                     }
                   }}
                   style={styles.stepsStart}
-                  hitSlop={10}>
+                  hitSlop={10}
+                >
                   <Text style={styles.stepsStartText}>Start</Text>
                 </TouchableOpacity>
               </View>
 
               <FlatList
                 data={navigationSteps}
-                keyExtractor={(item) => item.id}
+                keyExtractor={item => item.id}
                 contentContainerStyle={styles.stepsList}
                 renderItem={({ item, index }) => (
                   <NavigationStepItem
@@ -4005,4 +4150,54 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   errorBtnText: { color: COLORS.white, fontWeight: '900' },
+
+  reportButton: {
+    backgroundColor: '#E23744',
+    paddingVertical: 8,
+    paddingHorizontal: 18,
+    borderRadius: 10,
+    marginLeft: 'auto',
+
+    elevation: 3,
+    shadowColor: '#E23744',
+    shadowOffset: {
+      width: 0,
+      height: 3,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+
+    borderWidth: 1,
+    borderColor: '#C92532',
+  },
+
+  reportHint: {
+    paddingHorizontal: s(14),
+    paddingBottom: vs(8),
+    fontSize: rf(11),
+    fontWeight: '800',
+    color: COLORS.text2,
+  },
+  reportInput: {
+    marginHorizontal: s(14),
+    minHeight: vs(100),
+    maxHeight: vs(160),
+    borderRadius: ms(12),
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: '#FAFAFA',
+    paddingHorizontal: s(12),
+    paddingVertical: vs(10),
+    textAlignVertical: 'top',
+    fontSize: rf(11),
+    color: COLORS.text,
+  },
+  reportCounter: {
+    alignSelf: 'flex-end',
+    marginRight: s(16),
+    marginTop: vs(4),
+    fontSize: rf(9),
+    color: COLORS.hint,
+    fontWeight: '700',
+  },
 });

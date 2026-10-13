@@ -12,10 +12,11 @@ import {
   clearAuthData,
 } from '../utils/GoogleAuthHandler';
 
+
 // ═══════════════════════════════════════════════════════════════
 // CONFIGURATION - UPDATE YOUR BACKEND URL HERE
 // ═══════════════════════════════════════════════════════════════
-const API_BASE_URL = 'https://postfoetal-nonancestrally-viki.ngrok-free.dev';
+const API_BASE_URL = 'https://vaguely-kindly-improper.ngrok-free.dev';
 
 const API_CONFIG = {
   baseUrl: API_BASE_URL,
@@ -340,6 +341,8 @@ const ParkingService = {
     Logger.info('PARKING', `Location: ${latitude}, ${longitude}`);
     Logger.info('PARKING', `EventType: "${EVENT_TYPES.LEAVE}"`);
 
+    
+
     // Validate userId
     if (!userId) {
       throw new Error('userId is required to vacate a spot');
@@ -376,6 +379,43 @@ const ParkingService = {
 
     Logger.success('PARKING', `🚗 Spot VACATED by ${userId}`);
     return vacatedSpot;
+  },
+  // ─────────────────────────────────────────────────────────────
+  // REPORT SPOT
+  // ─────────────────────────────────────────────────────────────
+  async reportSpot({ slotId, reportedByUserId, reason }) {
+    const token = await getValidAccessToken();
+
+    const response = await fetchWithTimeout(
+      `${API_BASE_URL}/parkit-api/operate`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          slotId,
+          reportedByUserId,
+          reason,
+          requestType: 'REPORT_SLOT',
+        }),
+      },
+      10000,
+    );
+
+    if (response.status === 401) {
+      const err = new Error('Session expired');
+      err.code = 'AUTH_EXPIRED';
+      throw err;
+    }
+
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data?.message || 'Could not submit report');
+    }
+
+    return response.json().catch(() => ({}));
   },
 
   // ─────────────────────────────────────────────────────────────

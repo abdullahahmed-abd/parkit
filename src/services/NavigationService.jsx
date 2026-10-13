@@ -16,7 +16,7 @@ import {
 // CONFIG
 // ═══════════════════════════════════════════════════════════════
 export const API_BASE_URL =
-  'https://postfoetal-nonancestrally-viki.ngrok-free.dev';
+  'https://vaguely-kindly-improper.ngrok-free.dev';
 
 export const APP_CONFIG = {
   APP_NAME: 'ParkIt',
