@@ -14,6 +14,7 @@
     <!-- Foreground service -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
 
     <!-- ═══ Bluetooth foreground service type ═══ -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
@@ -57,7 +58,7 @@
     <!-- 📍 Location Permissions -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <!-- ACCESS_BACKGROUND_LOCATION is removed: Background tracking is provided reliably via LocationService (Foreground Service with foregroundServiceType="location"), avoiding Google Play Store background location policy scrutiny and restrictions -->
 
     <!-- Bluetooth feature declaration -->
     <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
@@ -89,6 +90,13 @@
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <!-- ═══ Location Tracking Foreground Service ═══ -->
+        <service
+            android:name="com.parkit.location.LocationService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="location" />
 
         <!-- Receiver that gets activity updates -->
         <receiver
