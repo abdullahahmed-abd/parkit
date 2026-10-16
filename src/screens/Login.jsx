@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import Geolocation from '@react-native-community/geolocation';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { AppContext } from '../context/AppContext';
 import {
@@ -25,43 +26,64 @@ import {
   getStoredUserId,
 } from '../utils/GoogleAuthHandler';
 
+const LAST_KNOWN_LOC_KEY = '@parkit_last_known_location';
+
 //  Pre-fetch location while user is doing Google auth
 const prefetchLocation = async () => {
   try {
+    let cachedLocation = null;
+    try {
+      const cached = await AsyncStorage.getItem(LAST_KNOWN_LOC_KEY);
+      if (cached) cachedLocation = JSON.parse(cached);
+    } catch {}
+
     if (Platform.OS === 'android') {
-      const granted = await PermissionsAndroid.request(
+      const statuses = await PermissionsAndroid.requestMultiple([
         PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-        {
-          title: 'Location Permission',
-          message: 'ParkIt needs location access for navigation.',
-          buttonPositive: 'Allow',
-          buttonNegative: 'Deny',
-        },
-      );
-      if (granted !== PermissionsAndroid.RESULTS.GRANTED) return null;
+        PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION,
+      ]);
+      const fineGranted =
+        statuses[PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION] ===
+        PermissionsAndroid.RESULTS.GRANTED;
+      const coarseGranted =
+        statuses[PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION] ===
+        PermissionsAndroid.RESULTS.GRANTED;
+
+      if (!fineGranted && !coarseGranted) {
+        return cachedLocation;
+      }
     }
 
     const position = await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('timeout')), 3000);
+      const timeout = setTimeout(() => reject(new Error('timeout')), 3500);
       Geolocation.getCurrentPosition(
         (pos) => { clearTimeout(timeout); resolve(pos); },
         (err) => { clearTimeout(timeout); reject(err); },
-        { enableHighAccuracy: false, timeout: 3000, maximumAge: 60000 },
+        { enableHighAccuracy: true, timeout: 3500, maximumAge: 30000 },
       );
     });
 
     if (position?.coords?.latitude && position?.coords?.longitude) {
-      console.log(' Pre-fetched location:', position.coords.latitude.toFixed(4));
-      return {
+      const locObj = {
         latitude: position.coords.latitude,
         longitude: position.coords.longitude,
         accuracy: position.coords.accuracy || 0,
         prefetched: true,
       };
+      try {
+        await AsyncStorage.setItem(LAST_KNOWN_LOC_KEY, JSON.stringify(locObj));
+      } catch {}
+      return locObj;
     }
   } catch (e) {
     console.log(' Pre-fetch failed (ok):', e.message);
   }
+
+  try {
+    const cached = await AsyncStorage.getItem(LAST_KNOWN_LOC_KEY);
+    if (cached) return JSON.parse(cached);
+  } catch {}
+
   return null;
 };
 

@@ -38,6 +38,7 @@ import {
 } from 'react-native-safe-area-context';
 import MapLibreGL from '@maplibre/maplibre-react-native';
 import Geolocation from '@react-native-community/geolocation';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import LinearGradient from 'react-native-linear-gradient';
 import { RFValue } from 'react-native-responsive-fontsize';
 import { scale, moderateScale, verticalScale } from 'react-native-size-matters';
@@ -57,7 +58,6 @@ import {
   Logger,
   NAV_CONFIG,
   NEARBY_CONFIG,
-  DEFAULT_LOC,
   EMPTY_STYLE,
   APP_CONFIG,
   validLL,
@@ -321,22 +321,28 @@ const SearchMarkerLayer = React.memo(({ coordinate, isVisible }) => {
 });
 
 const UserLocationLayer = React.memo(
-  ({ coordinate, snappedCoordinate, isNavigating, accuracy }) => {
+  ({ coordinate, snappedCoordinate, isNavigating, accuracy, isVisible = true }) => {
     const display = useMemo(() => {
+      if (!isVisible) return null;
       if (isNavigating && snappedCoordinate && snappedCoordinate.length === 2)
         return snappedCoordinate;
-      if (coordinate && coordinate.length === 2) return coordinate;
-      return [DEFAULT_LOC.longitude, DEFAULT_LOC.latitude];
-    }, [coordinate, snappedCoordinate, isNavigating]);
+      if (
+        coordinate &&
+        coordinate.length === 2 &&
+        validLL(coordinate[1], coordinate[0])
+      )
+        return coordinate;
+      return null;
+    }, [coordinate, snappedCoordinate, isNavigating, isVisible]);
 
-    const feature = useMemo(
-      () => ({
+    const feature = useMemo(() => {
+      if (!display) return null;
+      return {
         type: 'Feature',
         geometry: { type: 'Point', coordinates: display },
         properties: {},
-      }),
-      [display],
-    );
+      };
+    }, [display]);
 
     const accRadius = useMemo(() => {
       if (!isNavigating || !accuracy || accuracy <= 0) return 0;
@@ -419,38 +425,73 @@ class MapErrorBoundary extends React.Component {
 }
 
 // ───────────────────────────────────────────────────────────────
+// Location Cache (Last Known Live Location)
+// ───────────────────────────────────────────────────────────────
+const LAST_KNOWN_LOC_KEY = '@parkit_last_known_location';
+
+const saveLastKnownLocation = async loc => {
+  try {
+    if (loc && validLL(loc.latitude, loc.longitude)) {
+      await AsyncStorage.setItem(
+        LAST_KNOWN_LOC_KEY,
+        JSON.stringify({
+          latitude: loc.latitude,
+          longitude: loc.longitude,
+          accuracy: loc.accuracy || 0,
+          heading: loc.heading,
+          speed: loc.speed,
+          timestamp: Date.now(),
+        }),
+      );
+    }
+  } catch (e) {
+    Logger.warn('LOC_CACHE', 'Failed to save last known location', e);
+  }
+};
+
+const getLastKnownLocation = async () => {
+  try {
+    const raw = await AsyncStorage.getItem(LAST_KNOWN_LOC_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && validLL(parsed.latitude, parsed.longitude)) {
+      return parsed;
+    }
+  } catch (e) {
+    Logger.warn('LOC_CACHE', 'Failed to read last known location', e);
+  }
+  return null;
+};
+
+// ───────────────────────────────────────────────────────────────
 // Permissions
 // ───────────────────────────────────────────────────────────────
 const LocationPermission = {
   async request() {
     if (Platform.OS !== 'android') return true;
     try {
-      const granted = await PermissionsAndroid.request(
+      const statuses = await PermissionsAndroid.requestMultiple([
         PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-        {
-          title: 'Location Permission',
-          message: 'ParkIt needs location access for navigation.',
-          buttonPositive: 'Allow',
-          buttonNegative: 'Deny',
-        },
-      );
+        PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION,
+      ]);
 
-      if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
-        Alert.alert('Permission Required', 'Location permission needed.', [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Settings', onPress: () => Linking.openSettings() },
-        ]);
+      const fineGranted =
+        statuses[PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION] ===
+        PermissionsAndroid.RESULTS.GRANTED;
+      const coarseGranted =
+        statuses[PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION] ===
+        PermissionsAndroid.RESULTS.GRANTED;
+
+      if (!fineGranted && !coarseGranted) {
+        Alert.alert(
+          'Location Permission Required',
+          'ParkIt needs your location to find nearby parking spots and give live turn-by-turn navigation.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Settings', onPress: () => Linking.openSettings() },
+          ],
+        );
         return false;
-      }
-
-      if (Platform.Version >= 29) {
-        try {
-          await PermissionsAndroid.request(
-            PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION,
-          );
-        } catch (e) {
-          Logger.warn('PERM', 'Background location denied', e);
-        }
       }
 
       return true;
@@ -982,11 +1023,24 @@ function ParkingMapScreenInner({ navigation, route }) {
   const [spotsLoading, setSpotsLoading] = useState(true);
   const [isRefreshingLocation, setIsRefreshingLocation] = useState(false);
 
-  const [userLoc, setUserLoc] = useState(DEFAULT_LOC);
-  const [userMarkerCoord, setUserMarkerCoord] = useState([
-    DEFAULT_LOC.longitude,
-    DEFAULT_LOC.latitude,
-  ]);
+  const [hasRealLocation, setHasRealLocation] = useState(
+    !!(prefetchedLocation?.latitude && prefetchedLocation?.longitude),
+  );
+  const [isLocatingUser, setIsLocatingUser] = useState(
+    !(prefetchedLocation?.latitude && prefetchedLocation?.longitude),
+  );
+  const [locatingError, setLocatingError] = useState(null);
+
+  const [userLoc, setUserLoc] = useState(
+    prefetchedLocation?.latitude && prefetchedLocation?.longitude
+      ? prefetchedLocation
+      : null,
+  );
+  const [userMarkerCoord, setUserMarkerCoord] = useState(
+    prefetchedLocation?.latitude && prefetchedLocation?.longitude
+      ? [prefetchedLocation.longitude, prefetchedLocation.latitude]
+      : null,
+  );
   const [snappedUserCoord, setSnappedUserCoord] = useState(null);
   const [userHeading, setUserHeading] = useState(null);
   const [locationAccuracy, setLocationAccuracy] = useState(0);
@@ -1137,12 +1191,14 @@ function ParkingMapScreenInner({ navigation, route }) {
       if (validLL(position.coords.latitude, position.coords.longitude)) {
         const accuracy = position.coords.accuracy || 0;
         setLocationSource(`Quick ±${accuracy.toFixed(0)}m`);
-        return {
+        const locObj = {
           latitude: position.coords.latitude,
           longitude: position.coords.longitude,
           accuracy,
           source: 'Quick',
         };
+        saveLastKnownLocation(locObj);
+        return locObj;
       }
     } catch (e) {
       Logger.warn('QUICK_LOC', 'Quick location failed', e);
@@ -1188,7 +1244,7 @@ function ParkingMapScreenInner({ navigation, route }) {
         const accuracy = position.coords.accuracy || 0;
         const source = accuracy < 50 ? 'GPS Accurate' : 'GPS';
         setLocationSource(`${source} ±${accuracy.toFixed(0)}m`);
-        return {
+        const locObj = {
           latitude: position.coords.latitude,
           longitude: position.coords.longitude,
           accuracy,
@@ -1196,6 +1252,8 @@ function ParkingMapScreenInner({ navigation, route }) {
           speed: position.coords.speed,
           source,
         };
+        saveLastKnownLocation(locObj);
+        return locObj;
       }
     } catch (e) {
       Logger.warn('LOCATION', 'Accurate location failed', e);
@@ -1207,7 +1265,7 @@ function ParkingMapScreenInner({ navigation, route }) {
     try {
       if (!permissionGrantedRef.current) {
         const has = await LocationPermission.request();
-        if (!has) return { ...DEFAULT_LOC, source: 'Default' };
+        if (!has) return null;
         permissionGrantedRef.current = true;
       }
 
@@ -1230,7 +1288,7 @@ function ParkingMapScreenInner({ navigation, route }) {
         if (validLL(position.coords.latitude, position.coords.longitude)) {
           const accuracy = position.coords.accuracy || 0;
           setLocationSource(`GPS ±${accuracy.toFixed(0)}m`);
-          return {
+          const locObj = {
             latitude: position.coords.latitude,
             longitude: position.coords.longitude,
             accuracy,
@@ -1238,6 +1296,8 @@ function ParkingMapScreenInner({ navigation, route }) {
             speed: position.coords.speed,
             source: 'GPS',
           };
+          saveLastKnownLocation(locObj);
+          return locObj;
         }
       } catch {}
 
@@ -1263,17 +1323,18 @@ function ParkingMapScreenInner({ navigation, route }) {
         if (validLL(position.coords.latitude, position.coords.longitude)) {
           const accuracy = position.coords.accuracy || 0;
           setLocationSource(`Network ±${accuracy.toFixed(0)}m`);
-          return {
+          const locObj = {
             latitude: position.coords.latitude,
             longitude: position.coords.longitude,
             accuracy,
             source: 'Network',
           };
+          saveLastKnownLocation(locObj);
+          return locObj;
         }
       } catch {}
 
-      setLocationSource('Default');
-      return { ...DEFAULT_LOC, source: 'Default' };
+      return null;
     } finally {
     }
   }, []);
@@ -1406,6 +1467,18 @@ function ParkingMapScreenInner({ navigation, route }) {
               ? `Network ±${accuracy.toFixed(0)}m`
               : `Low ±${accuracy.toFixed(0)}m`,
           );
+
+          saveLastKnownLocation({
+            latitude,
+            longitude,
+            accuracy,
+            heading,
+            speed,
+          });
+
+          setHasRealLocation(true);
+          setIsLocatingUser(false);
+          setLocatingError(null);
 
           lastLocationRef.current = newLoc;
           setUserLoc(newLoc);
@@ -2178,19 +2251,61 @@ function ParkingMapScreenInner({ navigation, route }) {
 
         let initialLocation = null;
 
+        // 1. If prefetchedLocation was provided by navigation or login
         if (prefetchedLocation?.latitude && prefetchedLocation?.longitude) {
           initialLocation = prefetchedLocation;
           permissionGrantedRef.current = true;
           setLocationSource(
             `Ready ±${prefetchedLocation.accuracy?.toFixed(0) || '?'}m`,
           );
-        } else {
-          initialLocation = await getQuickLocation();
+          saveLastKnownLocation(initialLocation);
+        }
 
+        // 2. Fast restore from persistent storage (returning user opening/reopening app)
+        if (!initialLocation) {
+          const cached = await getLastKnownLocation();
+          if (cached && isMountedRef.current) {
+            initialLocation = { ...cached, source: 'Cached' };
+            setLocationSource('📍 Cached location');
+          }
+        }
+
+        // If we have either prefetched or cached real location:
+        if (initialLocation && isMountedRef.current) {
+          setHasRealLocation(true);
+          setIsLocatingUser(false);
+          setLocatingError(null);
+          setUserLoc(initialLocation);
+          lastLocationRef.current = initialLocation;
+          updateMarkerPosition(
+            initialLocation.latitude,
+            initialLocation.longitude,
+            true,
+          );
+
+          // Center map directly on user's real location with zero delay
+          setTimeout(() => {
+            if (!cameraRef.current || !isMountedRef.current) return;
+            try {
+              cameraRef.current.setCamera({
+                centerCoordinate: [
+                  initialLocation.longitude,
+                  initialLocation.latitude,
+                ],
+                zoomLevel: 16,
+                animationDuration: 300,
+              });
+            } catch {}
+          }, 50);
+
+          loadSpots(initialLocation, true).catch(() => {});
+          startPassiveTracking();
+
+          // In background, fetch fresh live GPS fix and update if moved > 25m
           getAccurateLocation()
             .then(accurateLoc => {
               if (!isMountedRef.current || !accurateLoc) return;
-
+              saveLastKnownLocation(accurateLoc);
               const initLoc = lastLocationRef.current;
               const moved = initLoc
                 ? calcDistance(
@@ -2201,7 +2316,7 @@ function ParkingMapScreenInner({ navigation, route }) {
                   )
                 : Infinity;
 
-              if (moved > 30) {
+              if (moved > 25) {
                 setUserLoc(accurateLoc);
                 lastLocationRef.current = accurateLoc;
                 updateMarkerPosition(
@@ -2214,44 +2329,58 @@ function ParkingMapScreenInner({ navigation, route }) {
               }
             })
             .catch(() => {});
+          return;
+        }
+
+        // 3. First-time open / no cached location available yet
+        // Show finding live location loading state - NEVER show NYC or dummy map!
+        setIsLocatingUser(true);
+        setLocatingError(null);
+
+        let liveLoc = await getQuickLocation();
+        if (!liveLoc) {
+          liveLoc = await getAccurateLocation();
         }
 
         if (!isMountedRef.current) return;
 
-        const displayLocation = initialLocation || {
-          latitude: 40.7128,
-          longitude: -74.006,
-          accuracy: 0,
-          source: 'Default (NYC)',
-        };
+        if (liveLoc && validLL(liveLoc.latitude, liveLoc.longitude)) {
+          setHasRealLocation(true);
+          setIsLocatingUser(false);
+          setLocatingError(null);
+          setUserLoc(liveLoc);
+          lastLocationRef.current = liveLoc;
+          saveLastKnownLocation(liveLoc);
+          updateMarkerPosition(liveLoc.latitude, liveLoc.longitude, true);
 
-        setUserLoc(displayLocation);
-        lastLocationRef.current = displayLocation;
-        updateMarkerPosition(
-          displayLocation.latitude,
-          displayLocation.longitude,
-          true,
-        );
+          setTimeout(() => {
+            if (!cameraRef.current || !isMountedRef.current) return;
+            try {
+              cameraRef.current.setCamera({
+                centerCoordinate: [
+                  liveLoc.longitude,
+                  liveLoc.latitude,
+                ],
+                zoomLevel: 16,
+                animationDuration: 400,
+              });
+            } catch {}
+          }, 50);
 
-        // Center map immediately
-        setTimeout(() => {
-          if (!cameraRef.current || !isMountedRef.current) return;
-          try {
-            cameraRef.current.setCamera({
-              centerCoordinate: [
-                displayLocation.longitude,
-                displayLocation.latitude,
-              ],
-              zoomLevel: 16,
-              animationDuration: 400,
-            });
-          } catch {}
-        }, 50);
-
-        startPassiveTracking();
-        loadSpots(displayLocation, true).catch(() => {});
+          startPassiveTracking();
+          loadSpots(liveLoc, true).catch(() => {});
+        } else {
+          setIsLocatingUser(false);
+          setLocatingError(
+            'Unable to find your live location. Please make sure GPS is turned on and permissions are granted.',
+          );
+        }
       } catch (e) {
         Logger.error('INIT', 'Initialization failed', e);
+        if (isMountedRef.current) {
+          setIsLocatingUser(false);
+          setLocatingError('Location detection error. Please try again.');
+        }
       }
     };
 
@@ -2559,16 +2688,84 @@ function ParkingMapScreenInner({ navigation, route }) {
     );
   }, [currentUserId, mySpot, loadSpots, userLoc, navigation, handleAuthError]);
 
+  const retryFindLiveLocation = useCallback(async () => {
+    setIsLocatingUser(true);
+    setLocatingError(null);
+    try {
+      permissionGrantedRef.current = false;
+      const hasPerm = await LocationPermission.request();
+      if (!hasPerm) {
+        setIsLocatingUser(false);
+        setLocatingError(
+          'Location permission was denied. Please grant permission in App Settings.',
+        );
+        return;
+      }
+      permissionGrantedRef.current = true;
+
+      let loc = await getQuickLocation();
+      if (!loc) {
+        loc = await getAccurateLocation();
+      }
+
+      if (loc && validLL(loc.latitude, loc.longitude)) {
+        setHasRealLocation(true);
+        setIsLocatingUser(false);
+        setLocatingError(null);
+        setUserLoc(loc);
+        lastLocationRef.current = loc;
+        saveLastKnownLocation(loc);
+        updateMarkerPosition(loc.latitude, loc.longitude, true);
+        flyTo(loc.latitude, loc.longitude, 16, true);
+        startPassiveTracking();
+        await loadSpots(loc, true);
+      } else {
+        setIsLocatingUser(false);
+        setLocatingError(
+          'Could not find your live location. Please make sure GPS/Location services are turned on.',
+        );
+      }
+    } catch (err) {
+      setIsLocatingUser(false);
+      setLocatingError('Failed to detect location. Tap below to retry.');
+    }
+  }, [
+    getQuickLocation,
+    getAccurateLocation,
+    updateMarkerPosition,
+    flyTo,
+    startPassiveTracking,
+    loadSpots,
+  ]);
+
   const onLocate = useCallback(async () => {
     setShowSpotsSheet(false);
-    const location = await getLoc();
-    if (!location) return;
-    setUserLoc(location);
-    lastLocationRef.current = location;
-    updateMarkerPosition(location.latitude, location.longitude, true);
-    await loadSpots(location, true);
-    flyTo(location.latitude, location.longitude, 16, true);
-  }, [getLoc, loadSpots, flyTo, updateMarkerPosition]);
+    setIsRefreshingLocation(true);
+    try {
+      let location = await getAccurateLocation();
+      if (!location) {
+        location = await getLoc();
+      }
+      if (!location) {
+        Alert.alert(
+          'Location Not Available',
+          'Could not get your live location. Please check that GPS is turned on.',
+        );
+        return;
+      }
+      setHasRealLocation(true);
+      setIsLocatingUser(false);
+      setLocatingError(null);
+      setUserLoc(location);
+      lastLocationRef.current = location;
+      saveLastKnownLocation(location);
+      updateMarkerPosition(location.latitude, location.longitude, true);
+      await loadSpots(location, true);
+      flyTo(location.latitude, location.longitude, 16, true);
+    } finally {
+      setIsRefreshingLocation(false);
+    }
+  }, [getAccurateLocation, getLoc, loadSpots, flyTo, updateMarkerPosition]);
 
   const onFindParking = useCallback(async () => {
     const next = !showSpotsSheet;
@@ -2958,8 +3155,54 @@ function ParkingMapScreenInner({ navigation, route }) {
             snappedCoordinate={snappedUserCoord}
             isNavigating={isNavigating}
             accuracy={locationAccuracy}
+            isVisible={hasRealLocation}
           />
         </MapLibreGL.MapView>
+
+        {/* ── Locating / Finding Live Location Overlay ──────────────── */}
+        {!hasRealLocation && (
+          <View style={styles.locatingOverlay}>
+            <View style={styles.locatingCard}>
+              {isLocatingUser ? (
+                <>
+                  <View style={styles.locatingIconWrap}>
+                    <ActivityIndicator size="large" color={COLORS.primary} />
+                  </View>
+                  <Text style={styles.locatingTitle}>
+                    Finding your live location...
+                  </Text>
+                  <Text style={styles.locatingSubtitle}>
+                    Connecting to GPS satellites and cellular networks to detect nearby parking slots
+                  </Text>
+                </>
+              ) : locatingError ? (
+                <>
+                  <View style={[styles.locatingIconWrap, styles.locatingIconError]}>
+                    <Text style={styles.locatingWarningIcon}>📍</Text>
+                  </View>
+                  <Text style={styles.locatingTitle}>Find Your Live Location</Text>
+                  <Text style={styles.locatingSubtitle}>{locatingError}</Text>
+
+                  <TouchableOpacity
+                    style={styles.retryLocateBtn}
+                    activeOpacity={0.85}
+                    onPress={retryFindLiveLocation}
+                  >
+                    <Text style={styles.retryLocateBtnText}>🎯 Find Live Location</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.settingsLocateBtn}
+                    activeOpacity={0.7}
+                    onPress={() => Linking.openSettings()}
+                  >
+                    <Text style={styles.settingsLocateBtnText}>Open Device Settings</Text>
+                  </TouchableOpacity>
+                </>
+              ) : null}
+            </View>
+          </View>
+        )}
 
         {/* ── Tiles loading ─────────────────────────────────────── */}
         {!tilesLoaded && (
@@ -3596,6 +3839,93 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     fontSize: rf(12),
     fontWeight: '800',
+  },
+
+  // ── Finding live location overlay ──────────────────────────
+  locatingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 90,
+    backgroundColor: 'rgba(247, 247, 247, 0.94)',
+    paddingHorizontal: s(24),
+  },
+  locatingCard: {
+    width: '100%',
+    maxWidth: s(340),
+    paddingVertical: vs(28),
+    paddingHorizontal: s(22),
+    borderRadius: ms(24),
+    alignItems: 'center',
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    shadowColor: COLORS.shadow,
+    shadowOffset: { width: 0, height: 14 },
+    shadowOpacity: 0.15,
+    shadowRadius: 24,
+    elevation: 12,
+  },
+  locatingIconWrap: {
+    width: ms(68),
+    height: ms(68),
+    borderRadius: ms(34),
+    backgroundColor: 'rgba(229, 57, 53, 0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: vs(16),
+  },
+  locatingIconError: {
+    backgroundColor: 'rgba(255, 152, 0, 0.12)',
+  },
+  locatingWarningIcon: {
+    fontSize: rf(28),
+  },
+  locatingTitle: {
+    color: COLORS.text,
+    fontSize: rf(16),
+    fontWeight: '800',
+    textAlign: 'center',
+    marginBottom: vs(8),
+  },
+  locatingSubtitle: {
+    color: COLORS.text2,
+    fontSize: rf(11.5),
+    fontWeight: '500',
+    textAlign: 'center',
+    lineHeight: rf(17),
+    marginBottom: vs(20),
+  },
+  retryLocateBtn: {
+    backgroundColor: COLORS.primary,
+    borderRadius: ms(14),
+    paddingVertical: vs(12),
+    paddingHorizontal: s(24),
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: COLORS.primary,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    elevation: 6,
+    marginBottom: vs(10),
+  },
+  retryLocateBtnText: {
+    color: COLORS.white,
+    fontSize: rf(13),
+    fontWeight: '800',
+  },
+  settingsLocateBtn: {
+    paddingVertical: vs(8),
+    paddingHorizontal: s(16),
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  settingsLocateBtnText: {
+    color: COLORS.secondary,
+    fontSize: rf(11.5),
+    fontWeight: '700',
   },
 
   // ── Find parking button ────────────────────────────────────
