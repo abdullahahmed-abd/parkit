@@ -16,7 +16,7 @@ import {
 // ═══════════════════════════════════════════════════════════════
 // CONFIGURATION - UPDATE YOUR BACKEND URL HERE
 // ═══════════════════════════════════════════════════════════════
-const API_BASE_URL = 'https://vaguely-kindly-improper.ngrok-free.dev';
+const API_BASE_URL = 'https://parkit.sundukpay.com';
 
 const API_CONFIG = {
   baseUrl: API_BASE_URL,
@@ -72,7 +72,7 @@ const Logger = {
 const getAuthHeaders = async () => {
   try {
     const accessToken = await getValidAccessToken();
-    
+
     if (!accessToken) {
       Logger.warn('AUTH', 'No access token available');
       return {
@@ -115,7 +115,7 @@ const authenticatedFetch = async (url, options = {}, timeout = API_CONFIG.timeou
   try {
     // Get headers with access token
     const authHeaders = await getAuthHeaders();
-    
+
     const finalOptions = {
       ...options,
       headers: {
@@ -132,25 +132,25 @@ const authenticatedFetch = async (url, options = {}, timeout = API_CONFIG.timeou
     // If 401 Unauthorized, try to refresh token
     if (response.status === 401) {
       Logger.warn('API', '401 Unauthorized - Attempting token refresh...');
-      
+
       try {
         const newAccessToken = await refreshAccessToken();
-        
+
         if (newAccessToken) {
           Logger.info('API', 'Token refreshed, retrying request...');
-          
+
           // Update headers with new token
           finalOptions.headers['Authorization'] = `Bearer ${newAccessToken}`;
-          
+
           // Retry the request
           response = await fetchWithTimeout(url, finalOptions, timeout);
         }
       } catch (refreshError) {
         Logger.error('API', 'Token refresh failed', refreshError);
-        
+
         // Clear auth data and throw auth error
         await clearAuthData();
-        
+
         const error = new Error('Session expired. Please login again.');
         error.code = 'AUTH_EXPIRED';
         throw error;
@@ -162,7 +162,7 @@ const authenticatedFetch = async (url, options = {}, timeout = API_CONFIG.timeou
     if (error.code === 'AUTH_EXPIRED') {
       throw error;
     }
-    
+
     Logger.error('API', 'Authenticated fetch failed', error);
     throw error;
   }
@@ -181,7 +181,7 @@ const isValidCoordinate = (lat, lng) =>
 // PARKING SERVICE
 // ═══════════════════════════════════════════════════════════════
 const ParkingService = {
-  
+
   // ─────────────────────────────────────────────────────────────
   // SEND PARKING EVENT (PARK/LEAVE) - WITH JWT AUTH
   // ─────────────────────────────────────────────────────────────
@@ -192,7 +192,7 @@ const ParkingService = {
     if (!isValidCoordinate(latitude, longitude)) {
       throw new Error('Invalid coordinates provided');
     }
-    
+
     // Validate event type
     if (eventType !== EVENT_TYPES.PARK && eventType !== EVENT_TYPES.LEAVE) {
       throw new Error(
@@ -244,8 +244,8 @@ const ParkingService = {
       if (!response.ok) {
         throw new Error(
           responseData?.message ||
-            responseData?.error ||
-            `Server error: ${response.status}`,
+          responseData?.error ||
+          `Server error: ${response.status}`,
         );
       }
 
@@ -341,7 +341,7 @@ const ParkingService = {
     Logger.info('PARKING', `Location: ${latitude}, ${longitude}`);
     Logger.info('PARKING', `EventType: "${EVENT_TYPES.LEAVE}"`);
 
-    
+
 
     // Validate userId
     if (!userId) {
@@ -384,413 +384,413 @@ const ParkingService = {
   // REPORT SPOT
   // ─────────────────────────────────────────────────────────────
   async reportSpot({ slotId, reportedByUserId, reason }) {
-    const token = await getValidAccessToken();
+      const token = await getValidAccessToken();
 
-    const response = await fetchWithTimeout(
-      `${API_BASE_URL}/parkit-api/operate`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
+      const response = await fetchWithTimeout(
+        `${API_BASE_URL}/parkit-api/operate`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            slotId,
+            reportedByUserId,
+            reason,
+            requestType: 'REPORT_SLOT',
+          }),
         },
-        body: JSON.stringify({
-          slotId,
-          reportedByUserId,
-          reason,
-          requestType: 'REPORT_SLOT',
-        }),
-      },
-      10000,
-    );
+        10000,
+      );
 
-    if (response.status === 401) {
-      const err = new Error('Session expired');
-      err.code = 'AUTH_EXPIRED';
-      throw err;
-    }
+      if (response.status === 401) {
+        const err = new Error('Session expired');
+        err.code = 'AUTH_EXPIRED';
+        throw err;
+      }
 
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      throw new Error(data?.message || 'Could not submit report');
-    }
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data?.message || 'Could not submit report');
+      }
 
-    return response.json().catch(() => ({}));
-  },
+      return response.json().catch(() => ({}));
+    },
 
   // ─────────────────────────────────────────────────────────────
   // FETCH NEARBY SPOTS - WITH JWT AUTH
   // ─────────────────────────────────────────────────────────────
   async fetchNearbySpots(
-    latitude,
-    longitude,
-    radius = API_CONFIG.defaultRadius,
-    retryCount = 0,
-  ) {
-    const url = API_CONFIG.baseUrl + API_CONFIG.operateEndpoint;
+      latitude,
+      longitude,
+      radius = API_CONFIG.defaultRadius,
+      retryCount = 0,
+    ) {
+      const url = API_CONFIG.baseUrl + API_CONFIG.operateEndpoint;
 
-    if (!isValidCoordinate(latitude, longitude)) {
-      throw new Error('Invalid coordinates for nearby search');
-    }
-
-    const body = {
-      userLat: latitude,
-      userLon: longitude,
-      radius: radius,
-      requestType: REQUEST_TYPES.NEARBY_PARKING_SLOTS,
-    };
-
-    Logger.info('NEARBY', '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    Logger.info('NEARBY', '🔍 Fetching nearby parking slots');
-    Logger.info('NEARBY', `URL: ${url}`);
-    Logger.info('NEARBY', `Body: ${JSON.stringify(body)}`);
-    Logger.info('NEARBY', `Radius: ${radius}m`);
-    Logger.info('NEARBY', '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-
-    try {
-      // Use authenticated fetch
-      const response = await authenticatedFetch(
-        url,
-        {
-          method: 'POST',
-          headers: {
-            'ngrok-skip-browser-warning': 'true',
-          },
-          body: JSON.stringify(body),
-        },
-        API_CONFIG.timeout,
-      );
-
-      const responseText = await response.text();
-      Logger.info('NEARBY', `Response status: ${response.status}`);
-
-      let responseData = null;
-      try {
-        responseData = JSON.parse(responseText);
-      } catch (_) {
-        Logger.error('NEARBY', `Response was: ${responseText.substring(0, 200)}`);
-        throw new Error('Invalid JSON response from server');
+      if (!isValidCoordinate(latitude, longitude)) {
+        throw new Error('Invalid coordinates for nearby search');
       }
 
-      if (!response.ok) {
-        throw new Error(
-          responseData?.message ||
+      const body = {
+        userLat: latitude,
+        userLon: longitude,
+        radius: radius,
+        requestType: REQUEST_TYPES.NEARBY_PARKING_SLOTS,
+      };
+
+      Logger.info('NEARBY', '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      Logger.info('NEARBY', '🔍 Fetching nearby parking slots');
+      Logger.info('NEARBY', `URL: ${url}`);
+      Logger.info('NEARBY', `Body: ${JSON.stringify(body)}`);
+      Logger.info('NEARBY', `Radius: ${radius}m`);
+      Logger.info('NEARBY', '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+      try {
+        // Use authenticated fetch
+        const response = await authenticatedFetch(
+          url,
+          {
+            method: 'POST',
+            headers: {
+              'ngrok-skip-browser-warning': 'true',
+            },
+            body: JSON.stringify(body),
+          },
+          API_CONFIG.timeout,
+        );
+
+        const responseText = await response.text();
+        Logger.info('NEARBY', `Response status: ${response.status}`);
+
+        let responseData = null;
+        try {
+          responseData = JSON.parse(responseText);
+        } catch (_) {
+          Logger.error('NEARBY', `Response was: ${responseText.substring(0, 200)}`);
+          throw new Error('Invalid JSON response from server');
+        }
+
+        if (!response.ok) {
+          throw new Error(
+            responseData?.message ||
             responseData?.error ||
             `Server error: ${response.status}`,
-        );
-      }
+          );
+        }
 
-      let rawSlots = [];
+        let rawSlots = [];
 
-      // Try different response structures
-      if (Array.isArray(responseData)) {
-        rawSlots = responseData;
-      } else if (Array.isArray(responseData?.slots)) {
-        rawSlots = responseData.slots;
-      } else if (Array.isArray(responseData?.parkingSlots)) {
-        rawSlots = responseData.parkingSlots;
-      } else if (Array.isArray(responseData?.parkingSlotsList)) {
-        rawSlots = responseData.parkingSlotsList;
-      } else if (Array.isArray(responseData?.data)) {
-        rawSlots = responseData.data;
-      } else if (Array.isArray(responseData?.data?.slots)) {
-        rawSlots = responseData.data.slots;
-      } else if (responseData && typeof responseData === 'object') {
-        const keys = Object.keys(responseData);
-        for (const key of keys) {
-          if (Array.isArray(responseData[key])) {
-            rawSlots = responseData[key];
-            Logger.info('NEARBY', `Found slots in key: "${key}"`);
-            break;
+        // Try different response structures
+        if (Array.isArray(responseData)) {
+          rawSlots = responseData;
+        } else if (Array.isArray(responseData?.slots)) {
+          rawSlots = responseData.slots;
+        } else if (Array.isArray(responseData?.parkingSlots)) {
+          rawSlots = responseData.parkingSlots;
+        } else if (Array.isArray(responseData?.parkingSlotsList)) {
+          rawSlots = responseData.parkingSlotsList;
+        } else if (Array.isArray(responseData?.data)) {
+          rawSlots = responseData.data;
+        } else if (Array.isArray(responseData?.data?.slots)) {
+          rawSlots = responseData.data.slots;
+        } else if (responseData && typeof responseData === 'object') {
+          const keys = Object.keys(responseData);
+          for (const key of keys) {
+            if (Array.isArray(responseData[key])) {
+              rawSlots = responseData[key];
+              Logger.info('NEARBY', `Found slots in key: "${key}"`);
+              break;
+            }
           }
         }
-      }
 
-      Logger.info('NEARBY', `Raw slots count: ${rawSlots.length}`);
+        Logger.info('NEARBY', `Raw slots count: ${rawSlots.length}`);
 
-      const spots = rawSlots
-        .map((slot, index) => {
-          const lat =
-            slot.latitude ??
-            slot.lat ??
-            slot.spotLat ??
-            slot.location?.latitude ??
-            slot.location?.lat ??
-            null;
+        const spots = rawSlots
+          .map((slot, index) => {
+            const lat =
+              slot.latitude ??
+              slot.lat ??
+              slot.spotLat ??
+              slot.location?.latitude ??
+              slot.location?.lat ??
+              null;
 
-          const lng =
-            slot.longitude ??
-            slot.lng ??
-            slot.lon ??
-            slot.spotLon ??
-            slot.location?.longitude ??
-            slot.location?.lng ??
-            slot.location?.lon ??
-            null;
+            const lng =
+              slot.longitude ??
+              slot.lng ??
+              slot.lon ??
+              slot.spotLon ??
+              slot.location?.longitude ??
+              slot.location?.lng ??
+              slot.location?.lon ??
+              null;
 
-          if (lat === null || lng === null || !isValidCoordinate(lat, lng)) {
-            Logger.warn(
-              'NEARBY',
-              `Skipping slot ${index} — invalid coords`,
-              slot,
-            );
-            return null;
-          }
+            if (lat === null || lng === null || !isValidCoordinate(lat, lng)) {
+              Logger.warn(
+                'NEARBY',
+                `Skipping slot ${index} — invalid coords`,
+                slot,
+              );
+              return null;
+            }
 
-          let isOccupied = false;
-          if (typeof slot.isOccupied === 'boolean') {
-            isOccupied = slot.isOccupied;
-          } else if (typeof slot.occupied === 'boolean') {
-            isOccupied = slot.occupied;
-          } else if (typeof slot.available === 'boolean') {
-            isOccupied = !slot.available;
-          } else if (typeof slot.status === 'string') {
-            const s = slot.status.toUpperCase();
-            isOccupied =
-              s === 'OCCUPIED' ||
-              s === 'PARKED' ||
-              s === 'PARK' ||
-              s === 'TAKEN' ||
-              s === 'UNAVAILABLE';
-          } else if (typeof slot.eventType === 'string') {
-            isOccupied = slot.eventType.toUpperCase() === 'PARK';
-          }
+            let isOccupied = false;
+            if (typeof slot.isOccupied === 'boolean') {
+              isOccupied = slot.isOccupied;
+            } else if (typeof slot.occupied === 'boolean') {
+              isOccupied = slot.occupied;
+            } else if (typeof slot.available === 'boolean') {
+              isOccupied = !slot.available;
+            } else if (typeof slot.status === 'string') {
+              const s = slot.status.toUpperCase();
+              isOccupied =
+                s === 'OCCUPIED' ||
+                s === 'PARKED' ||
+                s === 'PARK' ||
+                s === 'TAKEN' ||
+                s === 'UNAVAILABLE';
+            } else if (typeof slot.eventType === 'string') {
+              isOccupied = slot.eventType.toUpperCase() === 'PARK';
+            }
 
-          const deviceName =
-            slot.deviceName ??
-            slot.name ??
-            slot.spotName ??
-            slot.device ??
-            slot.vehicleName ??
-            slot.label ??
-            `Spot ${index + 1}`;
+            const deviceName =
+              slot.deviceName ??
+              slot.name ??
+              slot.spotName ??
+              slot.device ??
+              slot.vehicleName ??
+              slot.label ??
+              `Spot ${index + 1}`;
 
-          const spotId =
-            slot.id ??
-            slot.slotId ??
-            slot.spotId ??
-            slot._id ??
-            `nearby_${index}_${Date.now()}`;
+            const spotId =
+              slot.id ??
+              slot.slotId ??
+              slot.spotId ??
+              slot._id ??
+              `nearby_${index}_${Date.now()}`;
 
-          const createdAt =
-            slot.createdAt ??
-            slot.timestamp ??
-            slot.updatedAt ??
-            slot.lastUpdated ??
-            Date.now();
+            const createdAt =
+              slot.createdAt ??
+              slot.timestamp ??
+              slot.updatedAt ??
+              slot.lastUpdated ??
+              Date.now();
 
-          return {
-            id: String(spotId),
-            latitude: parseFloat(lat),
-            longitude: parseFloat(lng),
-            isOccupied,
-            isMySpot: false,
-            deviceName: String(deviceName),
-            createdAt:
-              typeof createdAt === 'string'
-                ? new Date(createdAt).getTime()
-                : createdAt,
-            eventType: slot.eventType || (isOccupied ? 'PARK' : 'LEAVE'),
-            _raw: __DEV__ ? slot : undefined,
-          };
-        })
-        .filter(Boolean);
+            return {
+              id: String(spotId),
+              latitude: parseFloat(lat),
+              longitude: parseFloat(lng),
+              isOccupied,
+              isMySpot: false,
+              deviceName: String(deviceName),
+              createdAt:
+                typeof createdAt === 'string'
+                  ? new Date(createdAt).getTime()
+                  : createdAt,
+              eventType: slot.eventType || (isOccupied ? 'PARK' : 'LEAVE'),
+              _raw: __DEV__ ? slot : undefined,
+            };
+          })
+          .filter(Boolean);
 
-      Logger.success(
-        'NEARBY',
-        `Parsed ${spots.length} spots from ${rawSlots.length} raw`,
-      );
-      Logger.info(
-        'NEARBY',
-        `Occupied: ${spots.filter(s => s.isOccupied).length} | Available: ${spots.filter(s => !s.isOccupied).length}`,
-      );
-
-      // Cache the results
-      try {
-        await AsyncStorage.setItem(
-          STORAGE_KEYS.NEARBY_CACHE,
-          JSON.stringify({
-            spots,
-            timestamp: Date.now(),
-            location: { latitude, longitude },
-            radius,
-          }),
+        Logger.success(
+          'NEARBY',
+          `Parsed ${spots.length} spots from ${rawSlots.length} raw`,
         );
-      } catch (_) {
-        // Ignore cache errors
-      }
+        Logger.info(
+          'NEARBY',
+          `Occupied: ${spots.filter(s => s.isOccupied).length} | Available: ${spots.filter(s => !s.isOccupied).length}`,
+        );
 
-      return spots;
-    } catch (error) {
-      Logger.error('NEARBY', 'Fetch nearby FAILED', error);
+        // Cache the results
+        try {
+          await AsyncStorage.setItem(
+            STORAGE_KEYS.NEARBY_CACHE,
+            JSON.stringify({
+              spots,
+              timestamp: Date.now(),
+              location: { latitude, longitude },
+              radius,
+            }),
+          );
+        } catch (_) {
+          // Ignore cache errors
+        }
 
-      // Don't retry if auth expired
-      if (error.code === 'AUTH_EXPIRED') {
+        return spots;
+      } catch (error) {
+        Logger.error('NEARBY', 'Fetch nearby FAILED', error);
+
+        // Don't retry if auth expired
+        if (error.code === 'AUTH_EXPIRED') {
+          throw error;
+        }
+
+        // Retry logic
+        if (retryCount < API_CONFIG.maxRetries) {
+          const delay = 2000 * (retryCount + 1);
+          Logger.warn(
+            'NEARBY',
+            `Retrying in ${delay}ms (attempt ${retryCount + 2})`,
+          );
+          await new Promise(r => setTimeout(r, delay));
+          return this.fetchNearbySpots(
+            latitude,
+            longitude,
+            radius,
+            retryCount + 1,
+          );
+        }
+
+        // Try to use cached data as fallback
+        try {
+          const cached = await AsyncStorage.getItem(STORAGE_KEYS.NEARBY_CACHE);
+          if (cached) {
+            const parsed = JSON.parse(cached);
+            if (Date.now() - parsed.timestamp < 5 * 60 * 1000) {
+              Logger.warn(
+                'NEARBY',
+                `Using cached data (${parsed.spots.length} spots)`,
+              );
+              return parsed.spots;
+            }
+          }
+        } catch (_) {
+          // Ignore cache errors
+        }
+
         throw error;
       }
-
-      // Retry logic
-      if (retryCount < API_CONFIG.maxRetries) {
-        const delay = 2000 * (retryCount + 1);
-        Logger.warn(
-          'NEARBY',
-          `Retrying in ${delay}ms (attempt ${retryCount + 2})`,
-        );
-        await new Promise(r => setTimeout(r, delay));
-        return this.fetchNearbySpots(
-          latitude,
-          longitude,
-          radius,
-          retryCount + 1,
-        );
-      }
-
-      // Try to use cached data as fallback
-      try {
-        const cached = await AsyncStorage.getItem(STORAGE_KEYS.NEARBY_CACHE);
-        if (cached) {
-          const parsed = JSON.parse(cached);
-          if (Date.now() - parsed.timestamp < 5 * 60 * 1000) {
-            Logger.warn(
-              'NEARBY',
-              `Using cached data (${parsed.spots.length} spots)`,
-            );
-            return parsed.spots;
-          }
-        }
-      } catch (_) {
-        // Ignore cache errors
-      }
-
-      throw error;
-    }
-  },
+    },
 
   // ─────────────────────────────────────────────────────────────
   // GET MY SPOT
   // ─────────────────────────────────────────────────────────────
   async getMySpot() {
-    try {
-      const stored = await AsyncStorage.getItem(STORAGE_KEYS.MY_SPOT);
-      if (!stored) return null;
-      return JSON.parse(stored);
-    } catch (error) {
-      Logger.error('PARKING', 'Failed to read saved spot', error);
-      return null;
-    }
-  },
+      try {
+        const stored = await AsyncStorage.getItem(STORAGE_KEYS.MY_SPOT);
+        if (!stored) return null;
+        return JSON.parse(stored);
+      } catch (error) {
+        Logger.error('PARKING', 'Failed to read saved spot', error);
+        return null;
+      }
+    },
 
   // ─────────────────────────────────────────────────────────────
   // CLEAR MY SPOT
   // ─────────────────────────────────────────────────────────────
   async clearMySpot() {
-    try {
-      await AsyncStorage.removeItem(STORAGE_KEYS.MY_SPOT);
-      Logger.info('PARKING', 'Saved spot cleared');
-    } catch (error) {
-      Logger.error('PARKING', 'Failed to clear spot', error);
-    }
-  },
+      try {
+        await AsyncStorage.removeItem(STORAGE_KEYS.MY_SPOT);
+        Logger.info('PARKING', 'Saved spot cleared');
+      } catch (error) {
+        Logger.error('PARKING', 'Failed to clear spot', error);
+      }
+    },
 
   // ─────────────────────────────────────────────────────────────
   // CLEAR NEARBY CACHE
   // ─────────────────────────────────────────────────────────────
   async clearNearbyCache() {
-    try {
-      await AsyncStorage.removeItem(STORAGE_KEYS.NEARBY_CACHE);
-    } catch (_) {
-      // Ignore errors
-    }
-  },
+      try {
+        await AsyncStorage.removeItem(STORAGE_KEYS.NEARBY_CACHE);
+      } catch (_) {
+        // Ignore errors
+      }
+    },
 
   // ─────────────────────────────────────────────────────────────
   // ADD TO HISTORY (INTERNAL)
   // ─────────────────────────────────────────────────────────────
   async _addToHistory(event) {
-    try {
-      const historyStr = await AsyncStorage.getItem(
-        STORAGE_KEYS.PARKING_HISTORY,
-      );
-      let history = [];
-      if (historyStr) {
-        try {
-          history = JSON.parse(historyStr);
-        } catch (_) {
-          // Ignore parse errors
+      try {
+        const historyStr = await AsyncStorage.getItem(
+          STORAGE_KEYS.PARKING_HISTORY,
+        );
+        let history = [];
+        if (historyStr) {
+          try {
+            history = JSON.parse(historyStr);
+          } catch (_) {
+            // Ignore parse errors
+          }
         }
+        history.unshift({ ...event, historyId: `hist_${Date.now()}` });
+        if (history.length > 50) history = history.slice(0, 50);
+        await AsyncStorage.setItem(
+          STORAGE_KEYS.PARKING_HISTORY,
+          JSON.stringify(history),
+        );
+      } catch (error) {
+        Logger.warn('PARKING', 'Failed to save history', error);
       }
-      history.unshift({ ...event, historyId: `hist_${Date.now()}` });
-      if (history.length > 50) history = history.slice(0, 50);
-      await AsyncStorage.setItem(
-        STORAGE_KEYS.PARKING_HISTORY,
-        JSON.stringify(history),
-      );
-    } catch (error) {
-      Logger.warn('PARKING', 'Failed to save history', error);
-    }
-  },
+    },
 
   // ─────────────────────────────────────────────────────────────
   // GET HISTORY
   // ─────────────────────────────────────────────────────────────
   async getHistory() {
-    try {
-      const historyStr = await AsyncStorage.getItem(
-        STORAGE_KEYS.PARKING_HISTORY,
-      );
-      if (!historyStr) return [];
-      return JSON.parse(historyStr);
-    } catch (error) {
-      Logger.error('PARKING', 'Failed to read history', error);
-      return [];
-    }
-  },
+      try {
+        const historyStr = await AsyncStorage.getItem(
+          STORAGE_KEYS.PARKING_HISTORY,
+        );
+        if (!historyStr) return [];
+        return JSON.parse(historyStr);
+      } catch (error) {
+        Logger.error('PARKING', 'Failed to read history', error);
+        return [];
+      }
+    },
 
   // ─────────────────────────────────────────────────────────────
   // CLEAR HISTORY
   // ─────────────────────────────────────────────────────────────
   async clearHistory() {
-    try {
-      await AsyncStorage.removeItem(STORAGE_KEYS.PARKING_HISTORY);
-      Logger.info('PARKING', 'History cleared');
-    } catch (error) {
-      Logger.error('PARKING', 'Failed to clear history', error);
-    }
-  },
+      try {
+        await AsyncStorage.removeItem(STORAGE_KEYS.PARKING_HISTORY);
+        Logger.info('PARKING', 'History cleared');
+      } catch (error) {
+        Logger.error('PARKING', 'Failed to clear history', error);
+      }
+    },
 
   // ─────────────────────────────────────────────────────────────
   // CHECK AUTH STATUS
   // ─────────────────────────────────────────────────────────────
   async checkAuthStatus() {
-    try {
-      const accessToken = await getValidAccessToken();
-      return {
-        isAuthenticated: !!accessToken,
-        hasToken: !!accessToken,
-      };
-    } catch (error) {
-      Logger.error('AUTH', 'Auth check failed', error);
-      return {
-        isAuthenticated: false,
-        hasToken: false,
-        error: error.message,
-      };
-    }
-  },
+      try {
+        const accessToken = await getValidAccessToken();
+        return {
+          isAuthenticated: !!accessToken,
+          hasToken: !!accessToken,
+        };
+      } catch (error) {
+        Logger.error('AUTH', 'Auth check failed', error);
+        return {
+          isAuthenticated: false,
+          hasToken: false,
+          error: error.message,
+        };
+      }
+    },
 
-  // ─────────────────────────────────────────────────────────────
-  // GET API CONFIG (for debugging)
-  // ─────────────────────────────────────────────────────────────
-  getConfig() {
-    return {
-      baseUrl: API_CONFIG.baseUrl,
-      parkingEventEndpoint: API_CONFIG.parkingEventEndpoint,
-      operateEndpoint: API_CONFIG.operateEndpoint,
-      fullParkingEventUrl: `${API_CONFIG.baseUrl}${API_CONFIG.parkingEventEndpoint}`,
-      fullOperateUrl: `${API_CONFIG.baseUrl}${API_CONFIG.operateEndpoint}`,
-    };
-  },
-};
+    // ─────────────────────────────────────────────────────────────
+    // GET API CONFIG (for debugging)
+    // ─────────────────────────────────────────────────────────────
+    getConfig() {
+      return {
+        baseUrl: API_CONFIG.baseUrl,
+        parkingEventEndpoint: API_CONFIG.parkingEventEndpoint,
+        operateEndpoint: API_CONFIG.operateEndpoint,
+        fullParkingEventUrl: `${API_CONFIG.baseUrl}${API_CONFIG.parkingEventEndpoint}`,
+        fullOperateUrl: `${API_CONFIG.baseUrl}${API_CONFIG.operateEndpoint}`,
+      };
+    },
+  };
 
-export default ParkingService;
-export { EVENT_TYPES, REQUEST_TYPES, API_CONFIG };
+  export default ParkingService;
+  export { EVENT_TYPES, REQUEST_TYPES, API_CONFIG };
